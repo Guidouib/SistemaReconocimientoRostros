@@ -24,6 +24,7 @@ conn = Conexion.get_db_connection()
 detecciones_totales = 0
 video_actual_path = ""
 tiempo_inicio_simulacion = None
+after_id = None
 
 def guardar_frame(frame, x, y, w, h):
     global frame_count, limite_imagenes
@@ -35,7 +36,6 @@ def guardar_frame(frame, x, y, w, h):
         filename = os.path.join(personPath, f"frame_{frame_count:05d}.jpg")
         cv2.imwrite(filename, rostro)
         lblContador.config(text=f"Imágenes capturadas: {frame_count}/{limite_imagenes}")
-        #print(f"Rostro guardado: {filename}")
     else:
         print("Se alcanzó el límite de 300 imágenes")
 
@@ -71,8 +71,11 @@ def deteccion_facial(frame):
     #return frame
 
 def visualizar():
-    global cap, personPath, tiempo_inicio_simulacion, detecciones_totales
+    global cap, personPath, tiempo_inicio_simulacion, detecciones_totales, after_id
     ret, frame = cap.read()
+
+    if not cap or not cap.isOpened():
+        return
 
     if ret == True:
         if tiempo_inicio_simulacion is None:
@@ -104,17 +107,8 @@ def visualizar():
 
         lblVideo.configure(image = img)
         lblVideo.image = img
-        lblVideo.after(10, visualizar)
+        after_id = lblVideo.after(10, visualizar)
     else:
-        #lblVideo.image = ""
-        #lblInfoVideoPath.configure(text="")
-        #btnVIdeo.configure(state="active")
-        #btnCamara.configure(state="active")
-        #btnGuardar.configure(state="disabled")
-        #textNombre.config(state="disabled")
-        #selected.set(0)
-        #btnEnd.configure(state="disabled")
-        #cap.release()
         finalizar_guardar_resultado()
 
 def activar_reconocimiento():
@@ -122,7 +116,6 @@ def activar_reconocimiento():
     modo_reconocerFacial = True
     btnReconocerFacial.configure(state="disabled", text="✓ Reconocimiento Activo")
     lblEstado.config(text="Estado: Reconociendo rostros", fg="green")
-    # print("Reconocimiento facila activado")
 
 def video_de_entrada(opcion):
     global cap, video_actual_path, detecciones_totales, tiempo_inicio_simulacion, frame_count
@@ -132,36 +125,13 @@ def video_de_entrada(opcion):
         
         if len(path_video) > 0:
             video_actual_path = path_video
-            #btnEnd.configure(state="active")
-            #btnVIdeo.configure(state="disabled")
-            #btnCamara.configure(state="disabled")
-            #btnGuardar.configure(state="active")
-            #textNombre.config(state="normal")
-            #btnReconocerFacial.configure(state="active")
-
-            #pathInputVideo = "..." + path_video[-20:]
-            #lblInfoVideoPath.configure(text=pathInputVideo)
             lblInfoVideoPath.configure(text=os.path.basename(path_video))
             cap = cv2.VideoCapture(path_video)
-            #detecciones_totales = 0
-            #tiempo_inicio_simulacion = None
-            #visualizar()
     if opcion == 2:
         video_actual_path= "Cámara en directo."
-        #btnEnd.configure(state="active")
-        #btnVIdeo.configure(state="disabled")
-        #btnCamara.configure(state="disabled")
-        #btnGuardar.configure(state="active")
-        #textNombre.config(state="normal")
-        #btnReconocerFacial.configure(state="active")
-        #lblInfoVideoPath.configure(text="")
         lblInfoVideoPath.configure(text="Cámara en Directo")
-
-        #detecciones_totales = 0
-        #tiempo_inicio_simulacion = None
         cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-        #visualizar()
-    # Actualizar estados de botones
+
     btnVIdeo.configure(state="disabled")
     btnCamara.configure(state="disabled")
     btnEnd.configure(state="normal")
@@ -176,7 +146,17 @@ def video_de_entrada(opcion):
     visualizar()
 
 def finalizar_limpiar():
-    global cap
+    global cap, after_id, modo_reconocerFacial
+    
+    if after_id is not None:
+        lblVideo.after_cancel(after_id)
+        after_id = None
+
+    if cap and cap.isOpened():
+        cap.release()
+    
+    modo_reconocerFacial = False
+    
     lblVideo.image = ""
     lblInfoVideoPath.configure(text="Ningún video seleccionado")
     btnVIdeo.configure(state="normal")
@@ -190,15 +170,7 @@ def finalizar_limpiar():
     lblContador.config(text="Imágenes capturadas: 0/300")
     if cap and cap.isOpened():
         cap.release()
-    #lblVideo.image =""
-    #lblInfoVideoPath.configure(text="")
-    #btnVIdeo.configure(state="active")
-    #btnCamara.configure(state="active")
-    #btnGuardar.configure(state="disabled")
-    #textNombre.config(state="disabled")
-    #btnEntrenar.configure(state="active")
-    #selected.set(0)
-    #cap.release()
+
 def guardar_nombre(textNombre):
     global personName, guardar, frame_count
     personName = textNombre.get()
@@ -212,11 +184,6 @@ def guardar_nombre(textNombre):
     btnGuardar.configure(state="disabled")
     textNombre.config(state="disabled")
     lblEstado.config(text=f"Estado: Guardando rostros para '{personName}'", fg="green")
-    #global personName, guardar
-    #personName = textNombre.get()   # Obtiene lo escrito en la caja
-    #guardar = True
-
-   #print("Nombre guardado:", personName)
 
 def finalizar_guardar_resultado():
     global cap, detecciones_totales, tiempo_inicio_simulacion, video_actual_path
@@ -281,50 +248,35 @@ def insertar_Resultado_Deteccion(algoritmo, video_prueba, detecciones_correctas,
 
     except pyodbc.Error as ex:
         print(f"Error al insertar datos: {ex.args[0]}")
-        #sqlstate = ex.args[0]
-        # Imprime la llamada SQL completa para depuración
-        #print(f"Error al insertar datos: {sqlstate}")
-        #print(f"Llamada al SP: {sp_call}")
-        #print(f"Parámetros enviados: {params}")
     finally:
         cursor.close()
 
 def limpiar():
     finalizar_limpiar()
-    #lblVideo.image = ""
-    #lblInfoVideoPath.configure(text="")
-    #btnVIdeo.configure(state="active")
-    #btnCamara.configure(state="active")
-    #btnGuardar.configure(state="disabled")
-    #textNombre.config(state="disabled")
-    #btnEntrenar.configure(state="active")
-    #selected.set(0)
-    #btnEnd.configure(state="disabled")
-    
-    #if cap.isOpened():
-    #    cap.release()
 
 def cargar_formulario():
     global root, lblInfoVideoPath, lblVideo, btnVIdeo, btnCamara, btnEnd
     global btnGuardar, textNombre, guardar, btnEntrenar, btnReconocerFacial
-    global lblEstado, lblDetecciones, lblContador
+    global lblEstado, lblDetecciones, lblContador, cap
+    
+    cap = None  # Inicializar cap como None
     
     root = Tk()
     root.title("Sistema de Reconocimiento Facial con YOLO")
     root.state("zoomed")
     root.configure(bg="#f0f0f0")
 
-    # ========== FRAME PRINCIPAL ==========
+    # ========== FRAME PRINCIPAL ==========s
     main_frame = Frame(root, bg="#f0f0f0")
-    main_frame.pack(fill=BOTH, expand=True, padx=20, pady=20)
+    main_frame.pack(fill=BOTH, expand=True, padx=10, pady=10)
 
     # ========== TÍTULO ==========
-    titulo_frame = Frame(main_frame, bg="#2c3e50", height=80)
-    titulo_frame.pack(fill=X, pady=(0, 20))
+    titulo_frame = Frame(main_frame, bg="#2c3e50", height=60)
+    titulo_frame.pack(fill=X, pady=(0, 10))
     titulo_frame.pack_propagate(False)
     
     Label(titulo_frame, text="🎯 SISTEMA DE RECONOCIMIENTO FACIAL", 
-          font=("Arial", 24, "bold"), bg="#2c3e50", fg="white").pack(pady=20)
+          font=("Arial", 20, "bold"), bg="#2c3e50", fg="white").pack(pady=15)
 
     # ========== CONTENEDOR PRINCIPAL ==========
     contenedor = Frame(main_frame, bg="#f0f0f0")
@@ -350,85 +302,91 @@ def cargar_formulario():
     lblInfoVideoPath.pack(side=LEFT, padx=5)
 
     # ========== PANEL DERECHO (Controles) ==========
-    panel_controles = Frame(contenedor, bg="white", relief=RIDGE, bd=2, width=350)
+    panel_controles = Frame(contenedor, bg="white", relief=RIDGE, bd=2, width=320)
     panel_controles.pack(side=RIGHT, fill=Y)
     panel_controles.pack_propagate(False)
 
-    Label(panel_controles, text="⚙️ CONTROLES", font=("Arial", 14, "bold"), 
-          bg="white", fg="#2c3e50").pack(pady=15)
+    Label(panel_controles, text="⚙️ CONTROLES", font=("Arial", 12, "bold"), 
+          bg="white", fg="#2c3e50").pack(pady=8)
 
     # --- Sección: Entrada de Video ---
     seccion_entrada = LabelFrame(panel_controles, text="  Entrada de Video  ", 
-                                 font=("Arial", 11, "bold"), bg="white", fg="#34495e", padx=15, pady=10)
-    seccion_entrada.pack(fill=X, padx=15, pady=10)
+                                 font=("Arial", 9, "bold"), bg="white", fg="#34495e", padx=10, pady=5)
+    seccion_entrada.pack(fill=X, padx=10, pady=5)
 
-    btnVIdeo = Button(seccion_entrada, text="📂 Elegir Video", font=("Arial", 10, "bold"),
+    btnVIdeo = Button(seccion_entrada, text="📂 Elegir Video", font=("Arial", 9),
                       bg="#3498db", fg="white", relief=FLAT, cursor="hand2",
-                      command=lambda: video_de_entrada(1), height=2)
-    btnVIdeo.pack(fill=X, pady=5)
+                      command=lambda: video_de_entrada(1))
+    btnVIdeo.pack(fill=X, pady=3, ipady=3)
 
-    btnCamara = Button(seccion_entrada, text="📷 Cámara en Directo", font=("Arial", 10, "bold"),
+    btnCamara = Button(seccion_entrada, text="📷 Cámara en Directo", font=("Arial", 9),
                        bg="#2ecc71", fg="white", relief=FLAT, cursor="hand2",
-                       command=lambda: video_de_entrada(2), height=2)
-    btnCamara.pack(fill=X, pady=5)
+                       command=lambda: video_de_entrada(2))
+    btnCamara.pack(fill=X, pady=3, ipady=3)
 
     # --- Sección: Captura de Rostros ---
     seccion_captura = LabelFrame(panel_controles, text="  Captura de Rostros  ", 
-                                 font=("Arial", 11, "bold"), bg="white", fg="#34495e", padx=15, pady=10)
-    seccion_captura.pack(fill=X, padx=15, pady=10)
+                                 font=("Arial", 9, "bold"), bg="white", fg="#34495e", padx=10, pady=5)
+    seccion_captura.pack(fill=X, padx=10, pady=5)
 
-    Label(seccion_captura, text="Nombre de la persona:", font=("Arial", 9), 
-          bg="white").pack(anchor=W, pady=(0, 5))
+    Label(seccion_captura, text="Nombre:", font=("Arial", 8), 
+          bg="white").pack(anchor=W, pady=(0, 3))
     
-    textNombre = Entry(seccion_captura, font=("Arial", 11), relief=SOLID, bd=1, state="disabled")
-    textNombre.pack(fill=X, pady=5, ipady=5)
+    textNombre = Entry(seccion_captura, font=("Arial", 10), relief=SOLID, bd=1, state="disabled")
+    textNombre.pack(fill=X, pady=3, ipady=3)
 
     guardar = False
-    btnGuardar = Button(seccion_captura, text="💾 Iniciar Captura", font=("Arial", 10, "bold"),
+    btnGuardar = Button(seccion_captura, text="💾 Iniciar Captura", font=("Arial", 9),
                         bg="#e67e22", fg="white", relief=FLAT, cursor="hand2",
                         command=lambda: guardar_nombre(textNombre), state="disabled")
-    btnGuardar.pack(fill=X, pady=5)
+    btnGuardar.pack(fill=X, pady=3, ipady=3)
 
     lblContador = Label(seccion_captura, text="Imágenes capturadas: 0/300", 
-                        font=("Arial", 9), bg="white", fg="#7f8c8d")
-    lblContador.pack(pady=(5, 0))
+                        font=("Arial", 8), bg="white", fg="#7f8c8d")
+    lblContador.pack(pady=(3, 0))
 
     # --- Sección: Reconocimiento ---
     seccion_reconocimiento = LabelFrame(panel_controles, text="  Reconocimiento  ", 
-                                       font=("Arial", 11, "bold"), bg="white", fg="#34495e", padx=15, pady=10)
-    seccion_reconocimiento.pack(fill=X, padx=15, pady=10)
+                                       font=("Arial", 9, "bold"), bg="white", fg="#34495e", padx=10, pady=5)
+    seccion_reconocimiento.pack(fill=X, padx=10, pady=5)
 
-    btnEntrenar = Button(seccion_reconocimiento, text="🎓 Entrenar Modelo", font=("Arial", 10, "bold"),
+    btnEntrenar = Button(seccion_reconocimiento, text="🎓 Entrenar Modelo", font=("Arial", 9),
                         bg="#9b59b6", fg="white", relief=FLAT, cursor="hand2",
                         command=lambda: entrenandoRF.entrenar_reconocedor_facil())
-    btnEntrenar.pack(fill=X, pady=5)
+    btnEntrenar.pack(fill=X, pady=3, ipady=3)
 
     btnReconocerFacial = Button(seccion_reconocimiento, text="🔍 Reconocer Persona", 
-                               font=("Arial", 10, "bold"), bg="#1abc9c", fg="white", 
+                               font=("Arial", 9), bg="#1abc9c", fg="white", 
                                relief=FLAT, cursor="hand2", state="disabled",
                                command=activar_reconocimiento)
-    btnReconocerFacial.pack(fill=X, pady=5)
+    btnReconocerFacial.pack(fill=X, pady=3, ipady=3)
 
     # --- Sección: Estado ---
     seccion_estado = LabelFrame(panel_controles, text="  Información  ", 
-                               font=("Arial", 11, "bold"), bg="white", fg="#34495e", padx=15, pady=10)
-    seccion_estado.pack(fill=X, padx=15, pady=10)
+                               font=("Arial", 9, "bold"), bg="white", fg="#34495e", padx=10, pady=5)
+    seccion_estado.pack(fill=X, padx=10, pady=5)
 
-    lblEstado = Label(seccion_estado, text="Estado: Inactivo", font=("Arial", 9), 
+    lblEstado = Label(seccion_estado, text="Estado: Inactivo", font=("Arial", 8), 
                      bg="white", fg="gray", anchor=W)
-    lblEstado.pack(fill=X, pady=2)
+    lblEstado.pack(fill=X, pady=1)
 
-    lblDetecciones = Label(seccion_estado, text="Detecciones: 0", font=("Arial", 9), 
+    lblDetecciones = Label(seccion_estado, text="Detecciones: 0", font=("Arial", 8), 
                           bg="white", fg="#34495e", anchor=W)
-    lblDetecciones.pack(fill=X, pady=2)
+    lblDetecciones.pack(fill=X, pady=1)
+    btnRegistro = Button(panel_controles, text="📝 Registro de Asistencia", font=("Arial", 10, "bold"),
+                   bg="#16a085", fg="white", relief=FLAT, cursor="hand2",
+                   state="normal", command=lambda: print("Registro de asistencia"))
+    btnRegistro.pack(fill=X, padx=10, pady=8, ipady=5)
 
     # --- Botón Finalizar ---
-    btnEnd = Button(panel_controles, text="⏹ Finalizar y Limpiar", font=("Arial", 11, "bold"),
-                   bg="#e74c3c", fg="white", relief=FLAT, cursor="hand2", height=2,
+    btnEnd = Button(panel_controles, text="⏹ Finalizar", font=("Arial", 10, "bold"),
+                   bg="#e74c3c", fg="white", relief=FLAT, cursor="hand2",
                    state="disabled", command=finalizar_limpiar)
-    btnEnd.pack(side=BOTTOM, fill=X, padx=15, pady=15)
+    btnEnd.pack(fill=X, padx=10, pady=8, ipady=5)
 
     root.mainloop()
 
+
 if __name__ == "__main__":
     cargar_formulario()
+    

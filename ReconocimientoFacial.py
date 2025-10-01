@@ -21,7 +21,7 @@ def ReconocimiendoFacial(frame,x, y, w, h):
             color = (0,255,0)
         else:
             nombre = "Desconocido"
-            color = (0,255,0)
+            color = (0, 0, 255)
         return nombre, color
     except Exception as e:
         print("Error en reconocimiento: ", e)
