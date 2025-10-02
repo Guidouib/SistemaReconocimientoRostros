@@ -11,6 +11,7 @@ import ReconocimientoFacial
 import Conexion
 import datetime
 import pyodbc
+import RegistroTrabajador
 
 faceClassif = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 frame_count = 0
@@ -375,7 +376,7 @@ def cargar_formulario():
     lblDetecciones.pack(fill=X, pady=1)
     btnRegistro = Button(panel_controles, text="📝 Registro de Asistencia", font=("Arial", 10, "bold"),
                    bg="#16a085", fg="white", relief=FLAT, cursor="hand2",
-                   state="normal", command=lambda: print("Registro de asistencia"))
+                   state="normal", command=lambda: RegistroTrabajador.RegistroPersona(conn))
     btnRegistro.pack(fill=X, padx=10, pady=8, ipady=5)
 
     # --- Botón Finalizar ---
