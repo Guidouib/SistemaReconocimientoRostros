@@ -132,13 +132,8 @@ def RegistroPersona(conn):
         if conn is None:
             print("Error: No se puede conectar a la base de datos.")
             return
-
         cursor = conn.cursor()
-    
-        # Prepara la llamada al Stored Procedure
         sp_call = "EXEC DET_InsertDatosPersonal_SP ?, ?, ?, ?, ?, ?, ?, ?, ?"
-        
-        # La precisión se calcula en Python antes de enviar los datos
         params = (
             nombre,
             ap_paterno,
@@ -151,7 +146,6 @@ def RegistroPersona(conn):
             1
         )
         try:
-            # Pasa los parámetros a la ejecución.
             cursor.execute(sp_call, params)
             conn.commit()
             print("Datos insertados correctamente en la base de datos.")
@@ -166,57 +160,96 @@ def RegistroPersona(conn):
         """Modifica un registro existente"""
         if not validar_campos():
             return
-        
-        nombre = entry_nombre.get().strip()
-        ap_paterno = entry_ap_paterno.get().strip()
-        ap_materno = entry_ap_materno.get().strip()
-        dni = entry_dni.get().strip()
-        direccion = entry_direccion.get().strip()
-        correo = entry_correo.get().strip()
-        celular = entry_celular.get().strip()
-        tipo = tipo_var.get()
-        
-        nombre_completo = f"{nombre} {ap_paterno} {ap_materno}"
-        
-        print("=" * 50)
-        print("REGISTRO MODIFICADO:")
-        print(f"  Nombre Completo: {nombre_completo}")
-        print(f"  DNI: {dni}")
-        print(f"  Dirección: {direccion}")
-        print(f"  Correo: {correo}")
-        print(f"  Celular: {celular}")
-        print(f"  Tipo: {tipo}")
-        print("=" * 50)
-        
-        # TODO: Aquí actualizas en la base de datos
-        # actualizar_persona(dni, nombre, ap_paterno, ap_materno, direccion, correo, celular, tipo)
-        
-        lbl_mensaje.config(text=f"✓ Registro modificado: {nombre_completo}", fg="#f39c12")
+        campos_a_controlar = [
+        entry_nombre,
+        entry_ap_paterno,
+        entry_ap_materno,
+        entry_direccion,
+        entry_correo,
+        entry_celular
+        ]
     
-    def eliminar_registro():
-        """Elimina un registro de la base de datos"""
+        for campo in campos_a_controlar:
+            campo.config(state=NORMAL)
+        for radio in frame_radios.winfo_children():
+            radio.config(state=NORMAL)
+    def leer_datos():
         dni = entry_dni.get().strip()
-        
         if not dni:
             lbl_mensaje.config(text="⚠ Ingrese un DNI para eliminar", fg="red")
             return
-        
-        # Confirmar eliminación
-        respuesta = messagebox.askyesno(
-            "Confirmar Eliminación",
-            f"¿Está seguro de eliminar el registro con DNI: {dni}?"
+        if conn is None:
+            print("Error: No se puede conectar a la base de datos.")
+            return
+        cursor = conn.cursor()
+        sp_call = "EXEC DET_LeerDatosPersonal_SP ?"
+        params = (
+            dni 
         )
-        
-        if respuesta:
-            print("=" * 50)
-            print(f"REGISTRO ELIMINADO - DNI: {dni}")
-            print("=" * 50)
-            
-            # TODO: Aquí eliminas de la base de datos
-            # eliminar_persona(dni)
-            
-            lbl_mensaje.config(text=f"✓ Registro eliminado - DNI: {dni}", fg="red")
-            limpiar_campos()
+        try:
+            cursor.execute(sp_call, params)
+            datos_retornados = cursor.fetchall()
+            mostrarPersonal(datos_retornados)
+            conn.commit()
+            habilitarCampos()
+            print("Datos Leidos correctamente.")
+        except pyodbc.Error as ex:
+            print(f"Error al leer los datos: {ex.args[0]}")
+        finally:
+            cursor.close()
+    def mostrarPersonal(Datos):
+        if not Datos:
+            lbl_mensaje.config(text="⚠ No se encontró personal con ese DNI.", fg="red")
+            return
+        limpiar_campos()
+        registroPersonal= Datos[0]
+        entry_nombre.insert(0, registroPersonal[1])
+        entry_ap_paterno.insert(0 , registroPersonal[2])
+        entry_ap_materno.insert(0, registroPersonal[3])
+        entry_dni.insert(0, registroPersonal[4])
+        entry_direccion.insert(0, registroPersonal[5])
+        entry_correo.insert(0, registroPersonal[6])
+        entry_celular.insert(0, registroPersonal[7])
+        tipo_var.set(str(registroPersonal[8]))
+        lbl_mensaje.config(text="✅ Datos de personal cargados correctamente.", fg="green")
+    def habilitarCampos():
+        campos_a_controlar = [
+        entry_nombre,
+        entry_ap_paterno,
+        entry_ap_materno,
+        entry_direccion,
+        entry_correo,
+        entry_celular
+        ]
+    
+        for campo in campos_a_controlar:
+            campo.config(state=DISABLED)
+        for radio in frame_radios.winfo_children():
+            radio.config(state=DISABLED)
+    def eliminar_registro():
+        dni = entry_dni.get().strip()
+        if not dni:
+            lbl_mensaje.config(text="⚠ Ingrese un DNI para eliminar", fg="red")
+            return
+        dni = entry_dni.get().strip()
+        if conn is None:
+            print("Error: No se puede conectar a la base de datos.")
+            return
+        cursor = conn.cursor()
+        sp_call = "EXEC DET_VigenciaDatosPersonal_SP ?, ?"
+        params = (
+            dni ,
+            0
+        )
+        try:
+            cursor.execute(sp_call, params)
+            conn.commit()
+            print("Datos dados de baja correctamente en la base de datos.")
+        except pyodbc.Error as ex:
+            print(f"Error al dar de baja los datos: {ex.args[0]}")
+        finally:
+            ventana_registro.after(2000, limpiar_campos)
+            cursor.close()
     
     def limpiar_campos():
         """Limpia todos los campos del formulario"""
@@ -228,8 +261,6 @@ def RegistroPersona(conn):
         entry_correo.delete(0, END)
         entry_celular.delete(0, END)
         tipo_var.set("1")
-        lbl_mensaje.config(text="")
-    
     # ========== FRAME DE BOTONES ==========
     frame_botones = Frame(frame_interno, bg="white")
     frame_botones.grid(row=9, column=0, columnspan=3, pady=15)
@@ -248,5 +279,8 @@ def RegistroPersona(conn):
     Button(frame_botones, text="🗑️ Eliminar", font=("Arial", 11, "bold"),
            bg="#e74c3c", fg="white", relief=FLAT, cursor="hand2",
            command=eliminar_registro, width=15).pack(side=LEFT, padx=8, ipady=10)
+    Button(frame_botones, text="📖 Leer Datos", font=("Arial", 11, "bold"),
+           bg="#3498db", fg="white", relief=FLAT, cursor="hand2",
+           command=leer_datos, width=15).pack(side=LEFT, padx=8, ipady=10)
     
     ventana_registro.mainloop()
