@@ -37,8 +37,6 @@ def guardar_frame(frame, x, y, w, h):
         filename = os.path.join(personPath, f"frame_{frame_count:05d}.jpg")
         cv2.imwrite(filename, rostro)
         lblContador.config(text=f"Imágenes capturadas: {frame_count}/{limite_imagenes}")
-    else:
-        print("Se alcanzó el límite de 300 imágenes")
 
 def deteccion_facial(frame):
     global detecciones_totales
@@ -92,8 +90,7 @@ def visualizar():
         new_h = int (h * scale)
 
         frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
-
-        if guardar == True and btnGuardar['state'] == NORMAL or modo_reconocerFacial:
+        if guardar == True and btnGuardar['state'] == DISABLED or modo_reconocerFacial:
             personName = textNombre.get()
             output_dir = 'C:/Users/GuidoUib/Desktop/TESIS OFICIAL/APP-PYTHON/REC_FACIAL_UIB/PRIMCIPAL/Data'
             personPath = output_dir + '/' + personName
@@ -110,8 +107,10 @@ def visualizar():
         lblVideo.image = img
         after_id = lblVideo.after(10, visualizar)
     else:
-        finalizar_guardar_resultado()
-
+        if modo_reconocerFacial:
+           finalizar_guardar_resultado()
+        else:
+           finalizar_limpiar()
 def activar_reconocimiento():
     global modo_reconocerFacial
     modo_reconocerFacial = True
@@ -138,6 +137,7 @@ def video_de_entrada(opcion):
     btnEnd.configure(state="normal")
     btnGuardar.configure(state="normal")
     textNombre.config(state="normal")
+    btnEntrenar.configure(state="normal")
     btnReconocerFacial.configure(state="normal")
     
     detecciones_totales = 0
@@ -147,7 +147,7 @@ def video_de_entrada(opcion):
     visualizar()
 
 def finalizar_limpiar():
-    global cap, after_id, modo_reconocerFacial
+    global cap, after_id, modo_reconocerFacial, guardar
     
     if after_id is not None:
         lblVideo.after_cancel(after_id)
@@ -157,33 +157,40 @@ def finalizar_limpiar():
         cap.release()
     
     modo_reconocerFacial = False
+    guardar = False
     
     lblVideo.image = ""
     lblInfoVideoPath.configure(text="Ningún video seleccionado")
     btnVIdeo.configure(state="normal")
     btnCamara.configure(state="normal")
     btnGuardar.configure(state="disabled")
+    textNombre.config(state="normal")
+    textNombre.delete(0, END)
     textNombre.config(state="disabled")
     btnEntrenar.configure(state="normal")
     btnEnd.configure(state="disabled")
     lblEstado.config(text="Estado: Inactivo", fg="gray")
     lblDetecciones.config(text="Detecciones: 0")
     lblContador.config(text="Imágenes capturadas: 0/300")
+    btnReconocerFacial.configure(state="disabled")
     if cap and cap.isOpened():
         cap.release()
 
 def guardar_nombre(textNombre):
     global personName, guardar, frame_count
-    personName = textNombre.get()
+    personName = textNombre.get().strip()
     
-    if personName.strip() == "":
-        lblEstado.config(text="Estado: ⚠ Ingrese un nombre válido", fg="red")
+    if personName == "" or not personName.isdigit() or len(personName) != 8:
+        lblEstado.config(text="Estado: ⚠ Ingrese DNI valido de 8 digitos.", fg="red")
         return
     
     guardar = True
     frame_count = 0
     btnGuardar.configure(state="disabled")
     textNombre.config(state="disabled")
+    textNombre.delete(0, END)
+    btnEntrenar.configure(state="disabled")
+    btnReconocerFacial.configure(state="disabled")
     lblEstado.config(text=f"Estado: Guardando rostros para '{personName}'", fg="green")
 
 def finalizar_guardar_resultado():
@@ -246,7 +253,7 @@ def insertar_Resultado_Deteccion(algoritmo, video_prueba, detecciones_correctas,
         cursor.execute(sp_call, params)
         conn.commit()
         print("Datos insertados correctamente en la base de datos.")
-
+        finalizar_limpiar()
     except pyodbc.Error as ex:
         print(f"Error al insertar datos: {ex.args[0]}")
     finally:
@@ -352,7 +359,7 @@ def cargar_formulario():
     seccion_reconocimiento.pack(fill=X, padx=10, pady=5)
 
     btnEntrenar = Button(seccion_reconocimiento, text="🎓 Entrenar Modelo", font=("Arial", 9),
-                        bg="#9b59b6", fg="white", relief=FLAT, cursor="hand2",
+                        bg="#9b59b6", fg="white", relief=FLAT, cursor="hand2", state="disable",
                         command=lambda: entrenandoRF.entrenar_reconocedor_facil())
     btnEntrenar.pack(fill=X, pady=3, ipady=3)
 
