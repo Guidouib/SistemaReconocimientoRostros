@@ -3,7 +3,7 @@ from tkinter import filedialog, messagebox
 import pyodbc
 
 def RegistroPersona(conn):
-    global nombre,ap_paterno,ap_materno,dni,direccion,correo,celular, tipo 
+    global nombre,ap_paterno,ap_materno,dni,direccion,correo,celular 
     """Abre una ventana con el formulario de registro de personas"""
     ventana_registro = Tk()
     ventana_registro.title("Registro de Personal")
@@ -69,7 +69,7 @@ def RegistroPersona(conn):
           bg="white", fg="#2c3e50", anchor=W).grid(
               row=6, column=0, columnspan=3, sticky=W, padx=5, pady=(15, 5))
     
-    tipo_var = StringVar(value=1)
+    tipo_var = StringVar(value="1")
     frame_radios = Frame(frame_interno, bg="white")
     frame_radios.grid(row=7, column=0, columnspan=3, sticky=W, padx=5, pady=(0, 5))
     
@@ -91,7 +91,7 @@ def RegistroPersona(conn):
     lbl_mensaje = Label(frame_interno, text="", font=("Arial", 9, "bold"),
                        bg="white", fg="green")
     lbl_mensaje.grid(row=9, column=0, columnspan=3, pady=8)
-    
+    print(tipo_var)
     # ========== FUNCIONES DE LOS BOTONES ==========
     
     def validar_campos():
@@ -128,9 +128,10 @@ def RegistroPersona(conn):
         correo = entry_correo.get().strip()
         celular = entry_celular.get().strip()
         tipo = int(tipo_var.get())
-
+        print(tipo,"asdas")
+        print(tipo_var,"asdasdasdada")
         if conn is None:
-            print("Error: No se puede conectar a la base de datos.")
+            messagebox.showerror("Registro Personal","No se puede conectar a la base de datos.",parent=ventana_registro)
             return
         cursor = conn.cursor()
         sp_call = "EXEC DET_InsertDatosPersonal_SP ?, ?, ?, ?, ?, ?, ?, ?, ?"
@@ -147,10 +148,25 @@ def RegistroPersona(conn):
         )
         try:
             cursor.execute(sp_call, params)
-            conn.commit()
-            print("Datos insertados correctamente en la base de datos.")
+            resultado = cursor.fetchone()
+
+            if resultado:
+                MensajeInsercion = str(resultado[0])
+
+                if MensajeInsercion == '1':
+                    conn.commit()
+                    messagebox.showinfo("Registro Personal","Se inserto Correctamente.",parent=ventana_registro)
+                elif MensajeInsercion == '0':
+                    conn.rollback()
+                    messagebox.showwarning("Registro Personal","Personal ya existe en la Base de Datos.",parent=ventana_registro)
+                elif MensajeInsercion == '2':
+                    conn.commit()
+                    messagebox.showinfo("Registro Personal", "Personal Modificado correctamente.", parent=ventana_registro)
+            else:
+                conn.rollback()
+                messagebox.showerror("Registro Personal","Ocurrio un error al insertar personal.",parent=ventana_registro)
         except pyodbc.Error as ex:
-            print(f"Error al insertar datos: {ex.args[0]}")
+            messagebox.showerror("Registro Personal",f"Error al insertar datos: {ex.args[0]}",parent=ventana_registro)
         finally:
             ventana_registro.after(2000, limpiar_campos)
             cursor.close()
@@ -161,14 +177,11 @@ def RegistroPersona(conn):
         if not validar_campos():
             return
         campos_a_controlar = [
-        entry_nombre,
-        entry_ap_paterno,
-        entry_ap_materno,
         entry_direccion,
         entry_correo,
         entry_celular
         ]
-    
+
         for campo in campos_a_controlar:
             campo.config(state=NORMAL)
         for radio in frame_radios.winfo_children():
@@ -179,7 +192,7 @@ def RegistroPersona(conn):
             lbl_mensaje.config(text="⚠ Ingrese un DNI para eliminar", fg="red")
             return
         if conn is None:
-            print("Error: No se puede conectar a la base de datos.")
+            messagebox.showerror("Registro Personal","No se puede conectar a la base de datos.",parent=ventana_registro)
             return
         cursor = conn.cursor()
         sp_call = "EXEC DET_LeerDatosPersonal_SP ?"
@@ -192,9 +205,9 @@ def RegistroPersona(conn):
             mostrarPersonal(datos_retornados)
             conn.commit()
             habilitarCampos()
-            print("Datos Leidos correctamente.")
+            messagebox.showinfo("Registro Personal","Datos Leidos Correctamente.",parent=ventana_registro)
         except pyodbc.Error as ex:
-            print(f"Error al leer los datos: {ex.args[0]}")
+            messagebox.showerror("Registro Personal",f"Error al leer los datos: {ex.args[0]}",parent=ventana_registro)
         finally:
             cursor.close()
     def mostrarPersonal(Datos):
@@ -233,7 +246,7 @@ def RegistroPersona(conn):
             return
         dni = entry_dni.get().strip()
         if conn is None:
-            print("Error: No se puede conectar a la base de datos.")
+            messagebox.showerror("Registro Personal","Error: No se puede conectar a la base de datos.",parent=ventana_registro)
             return
         cursor = conn.cursor()
         sp_call = "EXEC DET_VigenciaDatosPersonal_SP ?, ?"
@@ -244,15 +257,18 @@ def RegistroPersona(conn):
         try:
             cursor.execute(sp_call, params)
             conn.commit()
-            print("Datos dados de baja correctamente en la base de datos.")
+            messagebox.showinfo("Registro Personal","Personal dado de baja correctamente en la base de datos.",parent=ventana_registro)
         except pyodbc.Error as ex:
-            print(f"Error al dar de baja los datos: {ex.args[0]}")
+            messagebox.showerror("Registro Personal",f"Error al dar de baja los datos: {ex.args[0]}",parent=ventana_registro)
         finally:
             ventana_registro.after(2000, limpiar_campos)
             cursor.close()
     
     def limpiar_campos():
         """Limpia todos los campos del formulario"""
+        entry_nombre.config(state=NORMAL)
+        entry_ap_paterno.config(state=NORMAL)
+        entry_ap_materno.config(state=NORMAL)
         entry_nombre.delete(0, END)
         entry_ap_paterno.delete(0, END)
         entry_ap_materno.delete(0, END)
