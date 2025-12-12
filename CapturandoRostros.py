@@ -12,6 +12,7 @@ import Conexion
 import datetime
 import pyodbc
 import RegistroTrabajador
+from tkinter import ttk
 
 faceClassif = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 frame_count = 0
@@ -26,6 +27,7 @@ detecciones_totales = 0
 video_actual_path = ""
 tiempo_inicio_simulacion = None
 after_id = None
+modelo_activo = None
 
 def guardar_frame(frame, x, y, w, h):
     global frame_count, limite_imagenes
@@ -80,19 +82,31 @@ def visualizar():
         if tiempo_inicio_simulacion is None:
             tiempo_inicio_simulacion = datetime.datetime.now()
         #Redimencionar manteniendo aspecto
-        max_width = 800#640
-        max_height = 600#480
+        #max_width = 1000#640
+        #max_height = 600#480
+        #h, w = frame.shape[:2]
+        #scale_w = max_width / w
+        #scale_h = max_height / h
+        #scale = min(scale_w, scale_h, 1.0)
+        #new_w = int(w * scale)
+        #new_h = int (h * scale)
+        label_width = lblVideo.winfo_width()
+        label_height = lblVideo.winfo_height()
+
+        if label_width < 50 or label_height < 50:
+            after_id = lblVideo.after(10, visualizar)
+            return
+
         h, w = frame.shape[:2]
-        scale_w = max_width / w
-        scale_h = max_height / h
-        scale = min(scale_w, scale_h, 1.0)
+        scale = min(label_width / w, label_height / h)
+
         new_w = int(w * scale)
-        new_h = int (h * scale)
+        new_h = int(h * scale)
 
         frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
         if guardar == True and btnGuardar['state'] == DISABLED or modo_reconocerFacial:
             personName = textNombre.get()
-            output_dir = 'C:/Users/GuidoUib/Desktop/TESIS OFICIAL/APP-PYTHON/REC_FACIAL_UIB/PRIMCIPAL/Data'
+            output_dir = 'C:/Users/ASUS TUF/Desktop/Tesis Of/SistemaReconocimientoRostros/Data'
             personPath = output_dir + '/' + personName
             if not os.path.exists(personPath):
                 os.makedirs(personPath)
@@ -201,14 +215,14 @@ def finalizar_guardar_resultado():
 
     fecha_simulacion_str = tiempo_fin_simulacion.strftime('%Y-%m-%d %H:%M:%S')
     insertar_Resultado_Deteccion(
-        algoritmo="YOLO", 
+        algoritmo=MODELO_ACTIVO, 
         video_prueba=os.path.basename(video_actual_path) if video_actual_path else "Camara en Directo",
         detecciones_correctas=detecciones_totales,
         total_rostros_video=0, # Este valor debe ser un conteo manual del video
         tiempo_respuesta_ms=tiempo_total_ms,
         falsos_positivos=0, # Este valor debe ser validado manualmente
         falsos_negativos=0, # Este valor debe ser validado manualmente
-        configuracion="Video grabado con celular.",
+        configuracion="Video grabado con cámara de video vigilancia.",
         fecha_simulacion = fecha_simulacion_str
 
     )
@@ -265,7 +279,7 @@ def limpiar():
 def cargar_formulario():
     global root, lblInfoVideoPath, lblVideo, btnVIdeo, btnCamara, btnEnd
     global btnGuardar, textNombre, guardar, btnEntrenar, btnReconocerFacial
-    global lblEstado, lblDetecciones, lblContador, cap
+    global lblEstado, lblDetecciones, lblContador, cap, MODELO_ACTIVO
     
     cap = None  # Inicializar cap como None
     
@@ -336,6 +350,37 @@ def cargar_formulario():
     seccion_captura = LabelFrame(panel_controles, text="  Captura de Rostros  ", 
                                  font=("Arial", 9, "bold"), bg="white", fg="#34495e", padx=10, pady=5)
     seccion_captura.pack(fill=X, padx=10, pady=5)
+
+        # --- Selección de Modelo ---
+    Label(seccion_captura, text="Modelo:", font=("Arial", 8),
+        bg="white").pack(anchor=W, pady=(0, 3))
+
+    modelos_disponibles = [
+        "YOLO",
+        "SSD",
+        "FASTER R-CNN",
+    ]
+
+    modelo_seleccionado = StringVar()
+    modelo_seleccionado.set(modelos_disponibles[0])
+
+    cmbModelos = ttk.Combobox(
+        seccion_captura,
+        textvariable=modelo_seleccionado,
+        values=modelos_disponibles,
+        state="readonly",
+        font=("Arial", 9)
+    )
+    cmbModelos.pack(fill=X, pady=(0, 8))
+
+    def on_model_change(event=None):
+        global MODELO_ACTIVO
+        MODELO_ACTIVO = modelo_seleccionado.get()
+        lblEstado.config(text=f"Modelo activo: {MODELO_ACTIVO}", fg="blue")
+        print(MODELO_ACTIVO)
+    cmbModelos.bind("<<ComboboxSelected>>", on_model_change)
+    # Inicializar
+    MODELO_ACTIVO = modelo_seleccionado.get()
 
     Label(seccion_captura, text="Nombre:", font=("Arial", 8), 
           bg="white").pack(anchor=W, pady=(0, 3))
