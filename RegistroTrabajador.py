@@ -5,12 +5,17 @@ import pyodbc
 def RegistroPersona(conn):
     global nombre,ap_paterno,ap_materno,dni,direccion,correo,celular 
     """Abre una ventana con el formulario de registro de personas"""
-    ventana_registro = Tk()
+    # Usar Toplevel en lugar de Tk para evitar múltiples instancias de root
+    ventana_registro = Toplevel()
     ventana_registro.title("Registro de Personal")
     ventana_registro.geometry("1060x550")  # Tamaño fijo
     ventana_registro.resizable(False, False)  # No se puede redimensionar
     ventana_registro.configure(bg="#ecf0f1")
     
+    # Hacer la ventana modal
+    ventana_registro.transient() 
+    ventana_registro.grab_set()
+
     # Título
     frame_titulo = Frame(ventana_registro, bg="#475566")
     frame_titulo.pack(fill=X)
@@ -69,7 +74,10 @@ def RegistroPersona(conn):
           bg="white", fg="#2c3e50", anchor=W).grid(
               row=6, column=0, columnspan=3, sticky=W, padx=5, pady=(15, 5))
     
-    tipo_var = StringVar(value="1")
+    # IMPORTANTE: Vincular la variable a la ventana para evitar garbage collection
+    tipo_var = StringVar(master=ventana_registro, value="1")
+    ventana_registro.tipo_var = tipo_var 
+
     frame_radios = Frame(frame_interno, bg="white")
     frame_radios.grid(row=7, column=0, columnspan=3, sticky=W, padx=5, pady=(0, 5))
     
@@ -91,7 +99,7 @@ def RegistroPersona(conn):
     lbl_mensaje = Label(frame_interno, text="", font=("Arial", 9, "bold"),
                        bg="white", fg="green")
     lbl_mensaje.grid(row=9, column=0, columnspan=3, pady=8)
-    print(tipo_var)
+    
     # ========== FUNCIONES DE LOS BOTONES ==========
     
     def validar_campos():
@@ -127,9 +135,11 @@ def RegistroPersona(conn):
         direccion = entry_direccion.get().strip()
         correo = entry_correo.get().strip()
         celular = entry_celular.get().strip()
+        
+        # Obtener valor de la variable de control
         tipo = int(tipo_var.get())
-        print(tipo,"asdas")
-        print(tipo_var,"asdasdasdada")
+        print(f"Tipo guardado: {tipo}") # Debug
+
         if conn is None:
             messagebox.showerror("Registro Personal","No se puede conectar a la base de datos.",parent=ventana_registro)
             return
@@ -299,4 +309,5 @@ def RegistroPersona(conn):
            bg="#3498db", fg="white", relief=FLAT, cursor="hand2",
            command=leer_datos, width=15).pack(side=LEFT, padx=8, ipady=10)
     
-    ventana_registro.mainloop()
+    # Esperar a que se cierre la ventana
+    ventana_registro.wait_window()

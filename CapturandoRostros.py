@@ -13,6 +13,9 @@ import datetime
 import pyodbc
 import RegistroTrabajador
 from tkinter import ttk
+import torch
+import torchvision
+from torchvision import transforms as T
 
 faceClassif = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 frame_count = 0
@@ -20,7 +23,12 @@ limite_imagenes = 300
 modo_reconocerFacial = False
 script_dir = os.path.dirname(os.path.abspath(__file__))
 model_path = os.path.join(script_dir, "yolo11n-face.pt")
-model = YOLO(model_path)
+
+# Modelos
+yolo_model = YOLO(model_path)
+ssd_model = None
+faster_rcnn_model = None
+
 conn = Conexion.get_db_connection()
 
 detecciones_totales = 0
@@ -40,39 +48,122 @@ def guardar_frame(frame, x, y, w, h):
         cv2.imwrite(filename, rostro)
         lblContador.config(text=f"Imágenes capturadas: {frame_count}/{limite_imagenes}")
 
-def deteccion_facial(frame):
+def procesar_deteccion(frame, x, y, w, h):
     global detecciones_totales
-    results = model.predict(frame, stream=False, verbose=False)[0]
+    
+    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+    detecciones_totales += 1
+    
+    if modo_reconocerFacial:
+        nombre, color = ReconocimientoFacial.ReconocimiendoFacial(frame, x, y, w, h)
+        cv2.putText(frame, nombre, (x, y - 25), 2, 1.1, color, 1, cv2.LINE_AA)
+        cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+    else:
+        # Solo guardar si estamos en modo captura (no reconocimiento)
+        # y si se ha definido 'guardar' en el scope global (que se usa en 'visualizar')
+        # Dado que esta funcion solo detecta, la logica de guardado original estaba acoplada.
+        # Para mantener compatibilidad con 'visualizar' que llama a 'deteccion_facial':
+        pass 
+        # NOTA: La lógica de guardar_frame se movió fuera del bucle de visualización en el código original?
+        # Revisando codigo anterior: guardar_frame se llamaba DENTRO del loop de detecciones.
+        # Restoramos comportamiento original.
+        if 'guardar' in globals() and guardar: # Chequeo defensivo
+             guardar_frame(frame.copy(), x, y, w, h)
+
+    return frame
+
+def detectar_rostro_yolo(frame):
+    results = yolo_model.predict(frame, stream=False, verbose=False)[0]
     boxes = results.boxes.xyxy.cpu().numpy()
+    
     for (x1, y1, x2, y2) in boxes:
         x, y = int(x1), int(y1)
         w, h = int(x2-x1), int(y2 - y1)
-        detecciones_totales += 1
-        if modo_reconocerFacial:
-            nombre, color = ReconocimientoFacial.ReconocimiendoFacial(frame, x, y, w, h)
-            cv2.putText(frame, nombre, (x, y - 25), 2, 1.1, color, 1, cv2.LINE_AA)
-            cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-        else:
-            guardar_frame(frame.copy(), x, y, w, h)
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-    lblDetecciones.config(text=f"Detecciones: {detecciones_totales}")
+        procesar_deteccion(frame, x, y, w, h)
     return frame
-    #gray = cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
-    #faces= faceClassif.detectMultiScale(gray, 1.3, 5)
-    #for (x, y, w, h) in faces:
-    #    if modo_reconocerFacial:
-    #        #ReconocimientoFacial.ReconocimiendoFacial(frame,x, y, w, h)
-    #        nombre, color = ReconocimientoFacial.ReconocimiendoFacial(frame, x, y, w, h)
-    #        cv2.putText(frame, nombre,(x,y-25),2,1.1, color, 1, cv2.LINE_AA)
-    #        cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
-    #    else:
-    #        guardar_frame(frame.copy(), x, y, w, h)
-    #        cv2.rectangle(frame, (x,y), (x+w, y+h), (0, 255,0), 2)
-    #    
-    #return frame
+
+def detectar_rostro_ssd(frame):
+    global ssd_model
+    if ssd_model is None:
+        print("Cargando modelo SSD (PyTorch)...")
+        # Usamos SSD300 VGG16 preentrenado. Detecta 80 clases COCO. Persona = 1.
+        ssd_model = torchvision.models.detection.ssd300_vgg16(weights=torchvision.models.detection.SSD300_VGG16_Weights.DEFAULT)
+        ssd_model.eval()
+        if torch.cuda.is_available():
+            ssd_model.to('cuda')
+            
+    # Preprocesamiento
+    transform = T.Compose([T.ToTensor()])
+    img_tensor = transform(frame).to('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    with torch.no_grad():
+        detections = ssd_model([img_tensor])[0]
+    
+    # Filtrar detecciones (Clase 1 = Person en COCO)
+    confidence_threshold = 0.5
+    for i in range(len(detections['boxes'])):
+        score = detections['scores'][i].item()
+        label = detections['labels'][i].item()
+        
+        if score > confidence_threshold and label == 1: # 1 es Persona
+            box = detections['boxes'][i].cpu().numpy()
+            x1, y1, x2, y2 = box.astype(int)
+            x, y = x1, y1
+            w, h = x2 - x1, y2 - y1
+            procesar_deteccion(frame, x, y, w, h)
+            
+    return frame
+
+def detectar_rostro_faster_rcnn(frame):
+    global faster_rcnn_model
+    if faster_rcnn_model is None:
+        print("Cargando modelo Faster R-CNN (PyTorch)...")
+        # Faster R-CNN ResNet50
+        faster_rcnn_model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights=torchvision.models.detection.FasterRCNN_ResNet50_FPN_Weights.DEFAULT)
+        faster_rcnn_model.eval()
+        if torch.cuda.is_available():
+            faster_rcnn_model.to('cuda')
+
+    # Preprocesamiento
+    transform = T.Compose([T.ToTensor()])
+    img_tensor = transform(frame).to('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    with torch.no_grad():
+        detections = faster_rcnn_model([img_tensor])[0]
+    
+    # Filtrar
+    confidence_threshold = 0.5
+    for i in range(len(detections['boxes'])):
+        score = detections['scores'][i].item()
+        label = detections['labels'][i].item()
+        
+        if score > confidence_threshold and label == 1: # 1 es Persona
+            box = detections['boxes'][i].cpu().numpy()
+            x1, y1, x2, y2 = box.astype(int)
+            x, y = x1, y1
+            w, h = x2 - x1, y2 - y1
+            procesar_deteccion(frame, x, y, w, h)
+    
+    return frame
+
+def deteccion_facial(frame):
+    global detecciones_totales, MODELO_ACTIVO
+    
+    # Reset contador por frame? No, detecciones_totales es acumulativo o por sesion?
+    # En el codigo original se incrementaba globalmente. Lo mantenemos asi.
+    
+    if MODELO_ACTIVO == "YOLO":
+        return detectar_rostro_yolo(frame)
+    elif MODELO_ACTIVO == "SSD":
+        return detectar_rostro_ssd(frame)
+    elif MODELO_ACTIVO == "FASTER R-CNN":
+        return detectar_rostro_faster_rcnn(frame)
+    else:
+        # Default o fallback
+        return detectar_rostro_yolo(frame)
 
 def visualizar():
-    global cap, personPath, tiempo_inicio_simulacion, detecciones_totales, after_id
+    global cap, personPath, tiempo_inicio_simulacion, detecciones_totales, after_id, guardar
     ret, frame = cap.read()
 
     if not cap or not cap.isOpened():
@@ -81,15 +172,7 @@ def visualizar():
     if ret == True:
         if tiempo_inicio_simulacion is None:
             tiempo_inicio_simulacion = datetime.datetime.now()
-        #Redimencionar manteniendo aspecto
-        #max_width = 1000#640
-        #max_height = 600#480
-        #h, w = frame.shape[:2]
-        #scale_w = max_width / w
-        #scale_h = max_height / h
-        #scale = min(scale_w, scale_h, 1.0)
-        #new_w = int(w * scale)
-        #new_h = int (h * scale)
+        
         label_width = lblVideo.winfo_width()
         label_height = lblVideo.winfo_height()
 
@@ -104,14 +187,19 @@ def visualizar():
         new_h = int(h * scale)
 
         frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        
+        # Logica de preparacion de directorios
         if guardar == True and btnGuardar['state'] == DISABLED or modo_reconocerFacial:
-            personName = textNombre.get()
-            output_dir = 'C:/Users/ASUS TUF/Desktop/Tesis Of/SistemaReconocimientoRostros/Data'
-            personPath = output_dir + '/' + personName
-            if not os.path.exists(personPath):
-                os.makedirs(personPath)
+             # Solo crear directorios si vamos a guardar realmente
+             if guardar:
+                personName = textNombre.get()
+                output_dir = 'C:/Users/ASUS TUF/Desktop/Tesis Of/SistemaReconocimientoRostros/Data'
+                personPath = output_dir + '/' + personName
+                if not os.path.exists(personPath):
+                    os.makedirs(personPath)
 
-            frame = deteccion_facial(frame) 
+             frame = deteccion_facial(frame) 
+             lblDetecciones.config(text=f"Detecciones: {detecciones_totales}")
 
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         im = Image.fromarray(frame)
@@ -125,6 +213,7 @@ def visualizar():
            finalizar_guardar_resultado()
         else:
            finalizar_limpiar()
+           
 def activar_reconocimiento():
     global modo_reconocerFacial
     modo_reconocerFacial = True
@@ -142,7 +231,8 @@ def video_de_entrada(opcion):
             lblInfoVideoPath.configure(text=os.path.basename(path_video))
             cap = cv2.VideoCapture(path_video)
     if opcion == 2:
-        video_actual_path= "Cámara en directo."
+        # Codigo original tenia video_actual_path fijo para camara
+        video_actual_path= "Camara" 
         lblInfoVideoPath.configure(text="Cámara en Directo")
         cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
 

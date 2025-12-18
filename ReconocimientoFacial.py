@@ -91,7 +91,7 @@ def ReconocimiendoFacial(frame, x, y, w, h):
         
         # Threshold para ArcFace
         # DeepFace default para ArcFace es 0.68 (Cosine)
-        umbral = 0.68  
+        umbral = 0.09 #0.68  
         
         if min_dist < umbral and best_match_index != -1:
             nombre = known_names[best_match_index]
