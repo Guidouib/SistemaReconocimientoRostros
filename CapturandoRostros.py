@@ -16,6 +16,8 @@ from tkinter import ttk
 import torch
 import torchvision
 from torchvision import transforms as T
+import threading
+import queue
 
 faceClassif = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 frame_count = 0
@@ -37,6 +39,39 @@ tiempo_inicio_simulacion = None
 after_id = None
 modelo_activo = None
 
+# Cache para reconocimiento facial
+face_data_cache = []
+recognition_queue = queue.Queue()
+
+def worker_reconocimiento():
+    """Hilo en segundo plano para procesar reconocimiento facial sin bloquear UI"""
+    while True:
+        try:
+            # Obtener tarea (bloqueante, pero en hilo aparte)
+            task = recognition_queue.get()
+            if task is None: break # Señal de parada
+            
+            rostro_img, face_data = task
+            
+            # Ejecutar reconocimiento (esto es lo que demoraba)
+            # Pasamos x,y,w,h como 0 porque ya es un recorte
+            h, w, _ = rostro_img.shape
+            nombre, color = ReconocimientoFacial.ReconocimiendoFacial(rostro_img, 0, 0, w, h)
+            
+            # Actualizar diccionario compartido
+            face_data['name'] = nombre
+            face_data['color'] = color
+            face_data['skip'] = 10  # Aumentamos skip ya que es asincrono
+            face_data['pending'] = False
+            
+            recognition_queue.task_done()
+        except Exception as e:
+            print(f"Error en hilo de reconocimiento: {e}")
+
+# Iniciar hilo demonio (se cierra al cerrar la app)
+t = threading.Thread(target=worker_reconocimiento, daemon=True)
+t.start()
+
 def guardar_frame(frame, x, y, w, h):
     global frame_count, limite_imagenes
 
@@ -55,9 +90,75 @@ def procesar_deteccion(frame, x, y, w, h):
     detecciones_totales += 1
     
     if modo_reconocerFacial:
-        nombre, color = ReconocimientoFacial.ReconocimiendoFacial(frame, x, y, w, h)
-        cv2.putText(frame, nombre, (x, y - 25), 2, 1.1, color, 1, cv2.LINE_AA)
-        cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+        # Lógica de Caché para optimización
+        best_match_index = -1
+        center_x = x + w / 2
+        center_y = y + h / 2
+        
+        # Buscar similitud con rostros cacheados (por distancia)
+        for i, face in enumerate(face_data_cache):
+            fx, fy, fw, fh = face['x'], face['y'], face['w'], face['h']
+            fc_x = fx + fw / 2
+            fc_y = fy + fh / 2
+            
+            # Distancia euclidiana entre centros
+            dist = ((center_x - fc_x)**2 + (center_y - fc_y)**2)**0.5
+            
+            # Umbral de movimiento (píxeles). Si está cerca, es la misma persona.
+            if dist < 50: 
+                best_match_index = i
+                break
+        
+        # Variables para mostrar (mientras se procesa o si ya existe)
+        nombre_mostrar = "Procesando..."
+        color_mostrar = (128, 128, 128) # Gris
+        
+        if best_match_index != -1:
+            # === ROSTRO CONOCIDO (EN CACHE) ===
+            item = face_data_cache[best_match_index]
+            
+            # Verificar si necesita actualización
+            # Si skip <= 0 Y no se está procesando ya
+            if item['skip'] <= 0 and not item.get('pending', False):
+                 item['pending'] = True
+                 # Enviar copia del recorte a la cola
+                 rostro_recorte = frame[y:y+h, x:x+w].copy()
+                 recognition_queue.put((rostro_recorte, item))
+            else:
+                 # Decrementar contador si no está pendiente
+                 if not item.get('pending', False):
+                     item['skip'] -= 1
+
+            # Actualizar posición y visto
+            item['x'], item['y'], item['w'], item['h'] = x, y, w, h
+            item['seen'] = True
+            
+            # Usar valores actuales del cache (pueden ser "Procesando" o el nombre anterior)
+            nombre_mostrar = item['name']
+            color_mostrar = item['color']
+            
+        else:
+            # === ROSTRO NUEVO ===
+            # Crear entrada inicial
+            new_item = {
+                'x': x, 'y': y, 'w': w, 'h': h,
+                'name': "Procesando...",
+                'color': (128, 128, 128),
+                'skip': 0,
+                'seen': True,
+                'pending': True
+            }
+            face_data_cache.append(new_item)
+            
+            # Enviar a reconocer inmediatamente
+            rostro_recorte = frame[y:y+h, x:x+w].copy()
+            recognition_queue.put((rostro_recorte, new_item))
+            
+            nombre_mostrar = new_item['name']
+            color_mostrar = new_item['color']
+
+        cv2.putText(frame, nombre_mostrar, (x, y - 25), 2, 1.1, color_mostrar, 1, cv2.LINE_AA)
+        cv2.rectangle(frame, (x, y), (x + w, y + h), color_mostrar, 2)
     else:
         # Solo guardar si estamos en modo captura (no reconocimiento)
         # y si se ha definido 'guardar' en el scope global (que se usa en 'visualizar')
@@ -147,20 +248,35 @@ def detectar_rostro_faster_rcnn(frame):
     return frame
 
 def deteccion_facial(frame):
-    global detecciones_totales, MODELO_ACTIVO
+    global detecciones_totales, MODELO_ACTIVO, face_data_cache
     
-    # Reset contador por frame? No, detecciones_totales es acumulativo o por sesion?
-    # En el codigo original se incrementaba globalmente. Lo mantenemos asi.
-    
+    # 1. Marcar todos como no vistos al inicio del frame
+    for face in face_data_cache:
+        face['seen'] = False
+
+    result_frame = frame
     if MODELO_ACTIVO == "YOLO":
-        return detectar_rostro_yolo(frame)
+        result_frame = detecting_rostro_yolo_wrapper(frame)
     elif MODELO_ACTIVO == "SSD":
-        return detectar_rostro_ssd(frame)
+        result_frame = detectar_rostro_ssd(frame)
     elif MODELO_ACTIVO == "FASTER R-CNN":
-        return detectar_rostro_faster_rcnn(frame)
+        result_frame = detectar_rostro_faster_rcnn(frame)
     else:
-        # Default o fallback
-        return detectar_rostro_yolo(frame)
+        # Default
+        result_frame = detecting_rostro_yolo_wrapper(frame)
+        
+    # 2. Limpiar caché de caras que ya no están visibles
+    # Filtramos la lista conservando solo los que seen == True
+    face_data_cache[:] = [f for f in face_data_cache if f['seen']]
+    
+    return result_frame
+
+# Wrapper para mantener nombre consistente si es necesario, 
+# aunque en el codigo original se llamaba detectar_rostro_yolo directamente.
+# Haremos un alias temporal para no romper la logica del if/else si modificamos nombres,
+# pero aqui simplemente llamamos al existente.
+def detecting_rostro_yolo_wrapper(frame):
+    return detectar_rostro_yolo(frame)
 
 def visualizar():
     global cap, personPath, tiempo_inicio_simulacion, detecciones_totales, after_id, guardar
