@@ -174,7 +174,8 @@ def procesar_deteccion(frame, x, y, w, h):
     return frame
 
 def detectar_rostro_yolo(frame):
-    results = yolo_model.predict(frame, stream=False, verbose=False)[0]
+    # Aumentamos confianza a 0.6 para evitar detectar objetos random como caras
+    results = yolo_model.predict(frame, stream=False, verbose=False, conf=0.6)[0]
     boxes = results.boxes.xyxy.cpu().numpy()
     
     for (x1, y1, x2, y2) in boxes:

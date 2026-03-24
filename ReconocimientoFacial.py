@@ -48,8 +48,33 @@ def ReconocimiendoFacial(frame, x, y, w, h):
         if not model_loaded:
             return "Sin Modelo", (0, 0, 255)
 
-    # Recorte del rostro
+    # =============================
+    # 1️⃣ Recorte del rostro
+    # =============================
     rostro = frame[y:y+h, x:x+w]
+
+    # Validación defensiva
+    if rostro.size == 0:
+        return "Desconocido", (0, 0, 255)
+
+    # =============================
+    # 2️⃣ FILTRO POR TAMAÑO MÍNIMO
+    # =============================
+    if w < 80 or h < 80:
+        return "Desconocido", (0, 0, 255)
+
+    # =============================
+    # 3️⃣ FILTRO DE NITIDEZ (BLUR)
+    # =============================
+    gray = cv2.cvtColor(rostro, cv2.COLOR_BGR2GRAY)
+    blur = cv2.Laplacian(gray, cv2.CV_64F).var()
+
+    if blur < 50:
+        return "Desconocido", (0, 0, 255)
+
+    # =============================
+    # 4️⃣ OBTENER EMBEDDING (ArcFace)
+    # =============================
     
     try:
         # Obtener embedding del rostro actual
@@ -89,11 +114,14 @@ def ReconocimiendoFacial(frame, x, y, w, h):
                 min_dist = dist
                 best_match_index = i
         
+        # DEBUG: Imprimir la distancia real calculada
+        print(f"--> [DEBUG] Rostro detectado. Distancia mínima: {min_dist:.4f} | Candidato: {known_names[best_match_index] if best_match_index != -1 else 'Nadie'}")
+        
         # Threshold para ArcFace
         # DeepFace default para ArcFace es 0.68 (Cosine)
-        umbral = 0.7
+        umbral = 0.45
         
-        if min_dist < umbral and best_match_index != -1:
+        if min_dist < umbral and best_match_index != -1: 
             nombre = known_names[best_match_index]
             color = (0, 255, 0)
         else:
