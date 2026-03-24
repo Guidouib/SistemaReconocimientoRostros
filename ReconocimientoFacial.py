@@ -40,13 +40,19 @@ def calcular_distancia_coseno(source_representation, test_representation):
     return 1 - (a / (np.sqrt(b) * np.sqrt(c)))
 
 def ReconocimiendoFacial(frame, x, y, w, h):
+    """
+    Realiza reconocimiento facial y clasifica el resultado.
+    
+    Retorna: (nombre, color, distancia, clasificacion)
+      - clasificacion: "TP", "FP", "FN", "TN", o "FILTRADO"
+    """
     global model_loaded
     
     # Si el modelo no cargó al inicio, intentar cargarlo de nuevo (por si se entrenó recién)
     if not model_loaded:
         cargar_modelo()
         if not model_loaded:
-            return "Sin Modelo", (0, 0, 255)
+            return "Sin Modelo", (0, 0, 255), -1.0, "FILTRADO"
 
     # =============================
     # 1️⃣ Recorte del rostro
@@ -55,13 +61,13 @@ def ReconocimiendoFacial(frame, x, y, w, h):
 
     # Validación defensiva
     if rostro.size == 0:
-        return "Desconocido", (0, 0, 255)
+        return "Desconocido", (0, 0, 255), -1.0, "FILTRADO"
 
     # =============================
     # 2️⃣ FILTRO POR TAMAÑO MÍNIMO
     # =============================
     if w < 80 or h < 80:
-        return "Desconocido", (0, 0, 255)
+        return "Desconocido", (0, 0, 255), -1.0, "FILTRADO"
 
     # =============================
     # 3️⃣ FILTRO DE NITIDEZ (BLUR)
@@ -70,15 +76,18 @@ def ReconocimiendoFacial(frame, x, y, w, h):
     blur = cv2.Laplacian(gray, cv2.CV_64F).var()
 
     if blur < 50:
-        return "Desconocido", (0, 0, 255)
+        return "Desconocido", (0, 0, 255), -1.0, "FILTRADO"
 
     # =============================
     # 4️⃣ OBTENER EMBEDDING (ArcFace)
     # =============================
     
+    # Umbrales de clasificación (distancia coseno)
+    UMBRAL_TP = 0.35       # dist < 0.35 → Reconocimiento seguro (TP)
+    UMBRAL_RECONOCER = 0.45 # dist < 0.45 → Se reconoce (pero si 0.35-0.45 es FP potencial)
+    UMBRAL_FN = 0.55        # dist < 0.55 → FN potencial (muy cerca del umbral, posible persona conocida)
+
     try:
-        # Obtener embedding del rostro actual
-        # enforce_detection=False ya que estamos pasando un recorte
         results = DeepFace.represent(
             img_path=rostro, 
             model_name="ArcFace", 
@@ -86,7 +95,7 @@ def ReconocimiendoFacial(frame, x, y, w, h):
         )
         
         if not results:
-             return "Desconocido", (0, 0, 255)
+             return "Desconocido", (0, 0, 255), -1.0, "FILTRADO"
 
         target_embedding = results[0]["embedding"]
         target_embedding = np.array(target_embedding)
@@ -94,44 +103,44 @@ def ReconocimiendoFacial(frame, x, y, w, h):
         min_dist = float("inf")
         best_match_index = -1
 
-        # Comparar con todos los embeddings guardados
-        # Nota: Esto se puede optimizar con operaciones matriciales vectorizadas
-        # pero con <1000 rostros es suficientemente rápido iterando o broadcasting simple.
-        
-        # Versión vectorizada simple
-        # distance = 1 - cosine_similarity
-        
-        # Normalizar para facilitar coseno
-        # DeepFace embeddings no siempre estan normalizados, asi que usamos la formula completa
-        
-        # Calculo matricial de distancias coseno
-        # d(A, B) = 1 - (A . B) / (||A|| * ||B||)
-        
-        # Pre-calculos necesarios si se quiere optimizar, pero hagamoslo simple primero
         for i, source_emb in enumerate(known_embeddings):
             dist = calcular_distancia_coseno(source_emb, target_embedding)
             if dist < min_dist:
                 min_dist = dist
                 best_match_index = i
         
-        # DEBUG: Imprimir la distancia real calculada
-        print(f"--> [DEBUG] Rostro detectado. Distancia mínima: {min_dist:.4f} | Candidato: {known_names[best_match_index] if best_match_index != -1 else 'Nadie'}")
+        # =============================
+        # 5️⃣ CLASIFICACIÓN AUTOMÁTICA
+        # =============================
+        candidato = known_names[best_match_index] if best_match_index != -1 else "Nadie"
         
-        # Threshold para ArcFace
-        # DeepFace default para ArcFace es 0.68 (Cosine)
-        umbral = 0.45
-        
-        if min_dist < umbral and best_match_index != -1: 
+        if min_dist < UMBRAL_TP and best_match_index != -1:
+            # ✅ Reconocimiento seguro → Verdadero Positivo
             nombre = known_names[best_match_index]
-            color = (0, 255, 0)
-        else:
+            color = (0, 255, 0)  # Verde
+            clasificacion = "TP"
+        elif min_dist < UMBRAL_RECONOCER and best_match_index != -1:
+            # ⚠️ Reconocido pero con baja confianza → Falso Positivo potencial
+            nombre = known_names[best_match_index]
+            color = (0, 165, 255)  # Naranja
+            clasificacion = "FP"
+        elif min_dist < UMBRAL_FN:
+            # ⚠️ No reconocido pero cerca del umbral → Falso Negativo potencial
             nombre = "Desconocido"
-            color = (0, 0, 255)
+            color = (0, 100, 255)  # Rojo-naranja
+            clasificacion = "FN"
+        else:
+            # ❌ Definitivamente desconocido → Verdadero Negativo
+            nombre = "Desconocido"
+            color = (0, 0, 255)  # Rojo
+            clasificacion = "TN"
+        
+        print(f"--> [DEBUG] Distancia: {min_dist:.4f} | Candidato: {candidato} | Resultado: {nombre} | Clasificación: {clasificacion}")
             
-        return nombre, color
+        return nombre, color, min_dist, clasificacion
 
     except Exception as e:
         print("Error en reconocimiento:", e)
-        return "Error", (0, 0, 255)
+        return "Error", (0, 0, 255), -1.0, "FILTRADO"
 
 

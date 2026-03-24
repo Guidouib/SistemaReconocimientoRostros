@@ -39,12 +39,19 @@ tiempo_inicio_simulacion = None
 after_id = None
 modelo_activo = None
 
+# Contadores automáticos de clasificación
+conteo_tp = 0
+conteo_fp = 0
+conteo_fn = 0
+conteo_tn = 0
+
 # Cache para reconocimiento facial
 face_data_cache = []
 recognition_queue = queue.Queue()
 
 def worker_reconocimiento():
     """Hilo en segundo plano para procesar reconocimiento facial sin bloquear UI"""
+    global conteo_tp, conteo_fp, conteo_fn, conteo_tn
     while True:
         try:
             # Obtener tarea (bloqueante, pero en hilo aparte)
@@ -53,15 +60,16 @@ def worker_reconocimiento():
             
             rostro_img, face_data = task
             
-            # Ejecutar reconocimiento (esto es lo que demoraba)
-            # Pasamos x,y,w,h como 0 porque ya es un recorte
+            # Ejecutar reconocimiento (retorna 4 valores)
             h, w, _ = rostro_img.shape
-            nombre, color = ReconocimientoFacial.ReconocimiendoFacial(rostro_img, 0, 0, w, h)
+            nombre, color, distancia, clasificacion = ReconocimientoFacial.ReconocimiendoFacial(rostro_img, 0, 0, w, h)
             
             # Actualizar diccionario compartido
             face_data['name'] = nombre
             face_data['color'] = color
-            face_data['skip'] = 10  # Aumentamos skip ya que es asincrono
+            face_data['distancia'] = distancia
+            face_data['clasificacion'] = clasificacion
+            face_data['skip'] = 10
             face_data['pending'] = False
             
             recognition_queue.task_done()
@@ -85,6 +93,7 @@ def guardar_frame(frame, x, y, w, h):
 
 def procesar_deteccion(frame, x, y, w, h):
     global detecciones_totales
+    global conteo_tp, conteo_fp, conteo_fn, conteo_tn
     
     cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
     detecciones_totales += 1
@@ -159,6 +168,17 @@ def procesar_deteccion(frame, x, y, w, h):
 
         cv2.putText(frame, nombre_mostrar, (x, y - 25), 2, 1.1, color_mostrar, 1, cv2.LINE_AA)
         cv2.rectangle(frame, (x, y), (x + w, y + h), color_mostrar, 2)
+        
+        # Incrementar contadores FRAME A FRAME según la clasificación actual
+        if best_match_index != -1:
+            cls = face_data_cache[best_match_index].get('clasificacion')
+        else:
+            cls = new_item.get('clasificacion')
+            
+        if cls == "TP": conteo_tp += 1
+        elif cls == "FP": conteo_fp += 1
+        elif cls == "FN": conteo_fn += 1
+        elif cls == "TN": conteo_tn += 1
     else:
         # Solo guardar si estamos en modo captura (no reconocimiento)
         # y si se ha definido 'guardar' en el scope global (que se usa en 'visualizar')
@@ -317,6 +337,7 @@ def visualizar():
 
              frame = deteccion_facial(frame) 
              lblDetecciones.config(text=f"Detecciones: {detecciones_totales}")
+             lblClasificacion.config(text=f"TP: {conteo_tp} | FP: {conteo_fp} | FN: {conteo_fn} | TN: {conteo_tn}")
 
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         im = Image.fromarray(frame)
@@ -369,6 +390,7 @@ def video_de_entrada(opcion):
 
 def finalizar_limpiar():
     global cap, after_id, modo_reconocerFacial, guardar
+    global conteo_tp, conteo_fp, conteo_fn, conteo_tn
     
     if after_id is not None:
         lblVideo.after_cancel(after_id)
@@ -379,6 +401,12 @@ def finalizar_limpiar():
     
     modo_reconocerFacial = False
     guardar = False
+    
+    # Resetear contadores de clasificación
+    conteo_tp = 0
+    conteo_fp = 0
+    conteo_fn = 0
+    conteo_tn = 0
     
     lblVideo.image = ""
     lblInfoVideoPath.configure(text="Ningún video seleccionado")
@@ -393,6 +421,7 @@ def finalizar_limpiar():
     lblEstado.config(text="Estado: Inactivo", fg="gray")
     lblDetecciones.config(text="Detecciones: 0")
     lblContador.config(text="Imágenes capturadas: 0/300")
+    lblClasificacion.config(text="TP: 0 | FP: 0 | FN: 0 | TN: 0")
     btnReconocerFacial.configure(state="disabled")
     if cap and cap.isOpened():
         cap.release()
@@ -416,22 +445,39 @@ def guardar_nombre(textNombre):
 
 def finalizar_guardar_resultado():
     global cap, detecciones_totales, tiempo_inicio_simulacion, video_actual_path
+    global conteo_tp, conteo_fp, conteo_fn, conteo_tn
 
     tiempo_fin_simulacion = datetime.datetime.now()
     tiempo_total_ms = round((tiempo_fin_simulacion - tiempo_inicio_simulacion).total_seconds() * 1000, 3) if tiempo_inicio_simulacion else 0
+
+    # Detecciones correctas = TP (verdaderos positivos)
+    detecciones_correctas_real = conteo_tp
+    # Total de rostros únicos evaluados (clasificados)
+    total_rostros_evaluados = conteo_tp + conteo_fp + conteo_fn + conteo_tn
+
+    print(f"\n{'='*50}")
+    print(f"RESUMEN DE SESIÓN DE RECONOCIMIENTO")
+    print(f"{'='*50}")
+    print(f"  ✅ Verdaderos Positivos (TP): {conteo_tp}")
+    print(f"  ⚠️ Falsos Positivos (FP):     {conteo_fp}")
+    print(f"  ⚠️ Falsos Negativos (FN):     {conteo_fn}")
+    print(f"  ❌ Verdaderos Negativos (TN):  {conteo_tn}")
+    print(f"  📊 Total rostros evaluados:   {total_rostros_evaluados}")
+    print(f"  ✔️ Detecciones correctas:      {detecciones_correctas_real}")
+    print(f"  🔢 Total detecciones (frames): {detecciones_totales}")
+    print(f"{'='*50}\n")
 
     fecha_simulacion_str = tiempo_fin_simulacion.strftime('%Y-%m-%d %H:%M:%S')
     insertar_Resultado_Deteccion(
         algoritmo=MODELO_ACTIVO, 
         video_prueba=os.path.basename(video_actual_path) if video_actual_path else "Camara en Directo",
-        detecciones_correctas=detecciones_totales,
-        total_rostros_video=0, # Este valor debe ser un conteo manual del video
+        detecciones_correctas=detecciones_correctas_real,
+        total_rostros_video=total_rostros_evaluados,
         tiempo_respuesta_ms=tiempo_total_ms,
-        falsos_positivos=0, # Este valor debe ser validado manualmente
-        falsos_negativos=0, # Este valor debe ser validado manualmente
+        falsos_positivos=conteo_fp,
+        falsos_negativos=conteo_fn,
         configuracion="Video grabado con cámara de video vigilancia.",
-        fecha_simulacion = fecha_simulacion_str
-
+        fecha_simulacion=fecha_simulacion_str
     )
     limpiar()
 
@@ -450,11 +496,15 @@ def insertar_Resultado_Deteccion(algoritmo, video_prueba, detecciones_correctas,
     # Prepara la llamada al Stored Procedure
     sp_call = "EXEC DET_InsertDataDeteccionModelo_SP ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?"
     
-    # La precisión se calcula en Python antes de enviar los datos
-    precision = (detecciones_correctas / total_rostros_video) * 100 if total_rostros_video > 0 else 0
-    #aCCURACY
-    total_casos_evaluados = detecciones_correctas + falsos_positivos + falsos_negativos
+    # La precisión = TP / (TP + FP)
+    denominador_precision = detecciones_correctas + falsos_positivos
+    precision = (detecciones_correctas / denominador_precision) * 100 if denominador_precision > 0 else 0
+    
+    # Exactitud = (TP + TN) / Total
+    # total_casos_evaluados es detecciones_totales (total_rostros_video), que incluye TP, FP, FN, TN
+    total_casos_evaluados = total_rostros_video
     exactitud = (detecciones_correctas / total_casos_evaluados) * 100 if total_casos_evaluados > 0 else 0
+    
     params = (
         algoritmo,
         video_prueba,
@@ -486,7 +536,7 @@ def limpiar():
 def cargar_formulario():
     global root, lblInfoVideoPath, lblVideo, btnVIdeo, btnCamara, btnEnd
     global btnGuardar, textNombre, guardar, btnEntrenar, btnReconocerFacial
-    global lblEstado, lblDetecciones, lblContador, cap, MODELO_ACTIVO
+    global lblEstado, lblDetecciones, lblContador, lblClasificacion, cap, MODELO_ACTIVO
     
     cap = None  # Inicializar cap como None
     
@@ -633,6 +683,10 @@ def cargar_formulario():
     lblDetecciones = Label(seccion_estado, text="Detecciones: 0", font=("Arial", 8), 
                           bg="white", fg="#34495e", anchor=W)
     lblDetecciones.pack(fill=X, pady=1)
+
+    lblClasificacion = Label(seccion_estado, text="TP: 0 | FP: 0 | FN: 0 | TN: 0", 
+                             font=("Arial", 8, "bold"), bg="white", fg="#8e44ad", anchor=W)
+    lblClasificacion.pack(fill=X, pady=1)
     btnRegistro = Button(panel_controles, text="📝 Registro de Asistencia", font=("Arial", 10, "bold"),
                    bg="#16a085", fg="white", relief=FLAT, cursor="hand2",
                    state="normal", command=lambda: RegistroTrabajador.RegistroPersona(conn))
