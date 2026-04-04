@@ -47,7 +47,11 @@ conteo_tn = 0
 
 # Cache para reconocimiento facial
 face_data_cache = []
+import queue
+import glob
+
 recognition_queue = queue.Queue()
+cola_videos = []
 
 def worker_reconocimiento():
     """Hilo en segundo plano para procesar reconocimiento facial sin bloquear UI"""
@@ -204,15 +208,37 @@ def detectar_rostro_yolo(frame):
         procesar_deteccion(frame, x, y, w, h)
     return frame
 
+# Variables globales para carga asíncrona de modelos
+cargando_modelo_estado = False
+modelo_cargando_nombre = ""
+
+def cargar_modelo_en_background(nombre_modelo):
+    global ssd_model, faster_rcnn_model, cargando_modelo_estado
+    try:
+        if nombre_modelo == "SSD":
+            print("Descargando/Cargando modelo SSD (PyTorch) en segundo plano...")
+            ssd_model = torchvision.models.detection.ssd300_vgg16(weights=torchvision.models.detection.SSD300_VGG16_Weights.DEFAULT)
+            ssd_model.eval()
+            if torch.cuda.is_available():
+                ssd_model.to('cuda')
+            print("SSD Listo!")
+            
+        elif nombre_modelo == "FASTER R-CNN":
+            print("Descargando/Cargando modelo Faster R-CNN (PyTorch) en segundo plano...")
+            faster_rcnn_model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights=torchvision.models.detection.FasterRCNN_ResNet50_FPN_Weights.DEFAULT)
+            faster_rcnn_model.eval()
+            if torch.cuda.is_available():
+                faster_rcnn_model.to('cuda')
+            print("Faster R-CNN Listo!")
+    except Exception as e:
+        print(f"Error cargando el modelo {nombre_modelo}: {e}")
+    finally:
+        cargando_modelo_estado = False
+
 def detectar_rostro_ssd(frame):
     global ssd_model
     if ssd_model is None:
-        print("Cargando modelo SSD (PyTorch)...")
-        # Usamos SSD300 VGG16 preentrenado. Detecta 80 clases COCO. Persona = 1.
-        ssd_model = torchvision.models.detection.ssd300_vgg16(weights=torchvision.models.detection.SSD300_VGG16_Weights.DEFAULT)
-        ssd_model.eval()
-        if torch.cuda.is_available():
-            ssd_model.to('cuda')
+        return frame
             
     # Preprocesamiento
     transform = T.Compose([T.ToTensor()])
@@ -239,12 +265,7 @@ def detectar_rostro_ssd(frame):
 def detectar_rostro_faster_rcnn(frame):
     global faster_rcnn_model
     if faster_rcnn_model is None:
-        print("Cargando modelo Faster R-CNN (PyTorch)...")
-        # Faster R-CNN ResNet50
-        faster_rcnn_model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights=torchvision.models.detection.FasterRCNN_ResNet50_FPN_Weights.DEFAULT)
-        faster_rcnn_model.eval()
-        if torch.cuda.is_available():
-            faster_rcnn_model.to('cuda')
+        return frame
 
     # Preprocesamiento
     transform = T.Compose([T.ToTensor()])
@@ -269,8 +290,14 @@ def detectar_rostro_faster_rcnn(frame):
     return frame
 
 def deteccion_facial(frame):
-    global detecciones_totales, MODELO_ACTIVO, face_data_cache
+    global detecciones_totales, MODELO_ACTIVO, face_data_cache, cargando_modelo_estado, modelo_cargando_nombre
     
+    if cargando_modelo_estado:
+        h, w = frame.shape[:2]
+        texto = f"Cargando {modelo_cargando_nombre}... Espere por favor."
+        cv2.putText(frame, texto, (20, h - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
+        return frame
+
     # 1. Marcar todos como no vistos al inicio del frame
     for face in face_data_cache:
         face['seen'] = False
@@ -349,6 +376,12 @@ def visualizar():
     else:
         if modo_reconocerFacial:
            finalizar_guardar_resultado()
+           
+           # Revisar si hay un siguiente video en la cola
+           global cola_videos
+           if len(cola_videos) > 0:
+               # Pequeña pausa para no encolar eventos de Tkinter de forma conflictiva
+               lblVideo.after(500, iniciar_siguiente_video_de_cola)
         else:
            finalizar_limpiar()
            
@@ -375,6 +408,7 @@ def video_de_entrada(opcion):
         cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
 
     btnVIdeo.configure(state="disabled")
+    btnCarpeta.configure(state="disabled")
     btnCamara.configure(state="disabled")
     btnEnd.configure(state="normal")
     btnGuardar.configure(state="normal")
@@ -386,6 +420,56 @@ def video_de_entrada(opcion):
     frame_count = 0
     tiempo_inicio_simulacion = None
     lblEstado.config(text="Estado: Procesando...", fg="blue")
+    visualizar()
+
+def cargar_carpeta_videos():
+    global cola_videos, cap
+    carpeta = filedialog.askdirectory(title="Seleccionar carpeta con videos MP4")
+    if not carpeta: return
+    
+    videos = glob.glob(os.path.join(carpeta, "*.mp4")) + glob.glob(os.path.join(carpeta, "*.avi"))
+    if len(videos) == 0:
+        print("No se encontraron videos en la carpeta seleccionada")
+        return
+        
+    cola_videos.extend(videos)
+    print(f"Se agregaron {len(videos)} videos a la cola.")
+    
+    if cap is None or not cap.isOpened():
+        iniciar_siguiente_video_de_cola()
+
+def iniciar_siguiente_video_de_cola():
+    global cola_videos, video_actual_path, cap, detecciones_totales, tiempo_inicio_simulacion, frame_count
+    
+    if len(cola_videos) == 0:
+        print("Todos los videos de la cola han sido procesados.")
+        lblInfoVideoPath.configure(text="Procesamiento por lotes finalizado")
+        return
+        
+    video_path = cola_videos.pop(0)
+    video_actual_path = video_path
+    
+    # Preparar el UI para el siguiente video
+    lblInfoVideoPath.configure(text=f"Lote: {os.path.basename(video_path)} ({len(cola_videos)} restantes)")
+    cap = cv2.VideoCapture(video_path)
+    
+    btnVIdeo.configure(state="disabled")
+    btnCarpeta.configure(state="disabled")
+    btnCamara.configure(state="disabled")
+    btnEnd.configure(state="normal")
+    btnGuardar.configure(state="normal")
+    textNombre.config(state="normal")
+    btnEntrenar.configure(state="normal")
+    btnReconocerFacial.configure(state="normal")
+    
+    detecciones_totales = 0
+    frame_count = 0
+    tiempo_inicio_simulacion = None
+    
+    # Activar reconocimiento automáticamente
+    activar_reconocimiento()
+    
+    # Iniciar la visualización
     visualizar()
 
 def finalizar_limpiar():
@@ -411,6 +495,7 @@ def finalizar_limpiar():
     lblVideo.image = ""
     lblInfoVideoPath.configure(text="Ningún video seleccionado")
     btnVIdeo.configure(state="normal")
+    btnCarpeta.configure(state="normal")
     btnCamara.configure(state="normal")
     btnGuardar.configure(state="disabled")
     textNombre.config(state="normal")
@@ -501,9 +586,13 @@ def insertar_Resultado_Deteccion(algoritmo, video_prueba, detecciones_correctas,
     precision = (detecciones_correctas / denominador_precision) * 100 if denominador_precision > 0 else 0
     
     # Exactitud = (TP + TN) / Total
+    # Rescatamos matemáticamente los Verdaderos Negativos (TN)
+    verdaderos_negativos = total_rostros_video - (detecciones_correctas + falsos_positivos + falsos_negativos)
+    if verdaderos_negativos < 0: verdaderos_negativos = 0 # Protección
+    
     # total_casos_evaluados es detecciones_totales (total_rostros_video), que incluye TP, FP, FN, TN
     total_casos_evaluados = total_rostros_video
-    exactitud = (detecciones_correctas / total_casos_evaluados) * 100 if total_casos_evaluados > 0 else 0
+    exactitud = ((detecciones_correctas + verdaderos_negativos) / total_casos_evaluados) * 100 if total_casos_evaluados > 0 else 0
     
     params = (
         algoritmo,
@@ -534,7 +623,7 @@ def limpiar():
     finalizar_limpiar()
 
 def cargar_formulario():
-    global root, lblInfoVideoPath, lblVideo, btnVIdeo, btnCamara, btnEnd
+    global root, lblInfoVideoPath, lblVideo, btnVIdeo, btnCamara, btnCarpeta, btnEnd
     global btnGuardar, textNombre, guardar, btnEntrenar, btnReconocerFacial
     global lblEstado, lblDetecciones, lblContador, lblClasificacion, cap, MODELO_ACTIVO
     
@@ -593,10 +682,15 @@ def cargar_formulario():
                                  font=("Arial", 9, "bold"), bg="white", fg="#34495e", padx=10, pady=5)
     seccion_entrada.pack(fill=X, padx=10, pady=5)
 
-    btnVIdeo = Button(seccion_entrada, text="📂 Elegir Video", font=("Arial", 9),
+    btnVIdeo = Button(seccion_entrada, text="📂 Elegir Video único", font=("Arial", 9),
                       bg="#3498db", fg="white", relief=FLAT, cursor="hand2",
                       command=lambda: video_de_entrada(1))
     btnVIdeo.pack(fill=X, pady=3, ipady=3)
+
+    btnCarpeta = Button(seccion_entrada, text="📁 Procesar Lote (Carpeta)", font=("Arial", 9),
+                      bg="#9b59b6", fg="white", relief=FLAT, cursor="hand2",
+                      command=cargar_carpeta_videos)
+    btnCarpeta.pack(fill=X, pady=3, ipady=3)
 
     btnCamara = Button(seccion_entrada, text="📷 Cámara en Directo", font=("Arial", 9),
                        bg="#2ecc71", fg="white", relief=FLAT, cursor="hand2",
@@ -631,10 +725,21 @@ def cargar_formulario():
     cmbModelos.pack(fill=X, pady=(0, 8))
 
     def on_model_change(event=None):
-        global MODELO_ACTIVO
+        global MODELO_ACTIVO, cargando_modelo_estado, modelo_cargando_nombre, ssd_model, faster_rcnn_model
         MODELO_ACTIVO = modelo_seleccionado.get()
         lblEstado.config(text=f"Modelo activo: {MODELO_ACTIVO}", fg="blue")
         print(MODELO_ACTIVO)
+        
+        # Iniciar carga asíncrona si el modelo es pesado y no está en memoria
+        if MODELO_ACTIVO == "SSD" and ssd_model is None:
+            cargando_modelo_estado = True
+            modelo_cargando_nombre = "SSD"
+            threading.Thread(target=cargar_modelo_en_background, args=(MODELO_ACTIVO,), daemon=True).start()
+        elif MODELO_ACTIVO == "FASTER R-CNN" and faster_rcnn_model is None:
+            cargando_modelo_estado = True
+            modelo_cargando_nombre = "FASTER R-CNN"
+            threading.Thread(target=cargar_modelo_en_background, args=(MODELO_ACTIVO,), daemon=True).start()
+            
     cmbModelos.bind("<<ComboboxSelected>>", on_model_change)
     # Inicializar
     MODELO_ACTIVO = modelo_seleccionado.get()
