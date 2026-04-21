@@ -4,7 +4,6 @@ from PIL import Image
 from PIL import ImageTk
 from ultralytics import YOLO 
 import cv2
-import imutils
 import os
 import entrenandoRF
 import ReconocimientoFacial
@@ -19,7 +18,6 @@ from torchvision import transforms as T
 import threading
 import queue
 
-faceClassif = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 frame_count = 0
 limite_imagenes = 300
 modo_reconocerFacial = False
@@ -37,7 +35,6 @@ detecciones_totales = 0
 video_actual_path = ""
 tiempo_inicio_simulacion = None
 after_id = None
-modelo_activo = None
 
 # Contadores automáticos de clasificación
 conteo_tp = 0
@@ -47,11 +44,16 @@ conteo_tn = 0
 
 # Cache para reconocimiento facial
 face_data_cache = []
-import queue
 import glob
 
 recognition_queue = queue.Queue()
 cola_videos = []
+
+# Optimización para modelos pesados (SSD, Faster R-CNN)
+ssd_transform = T.Compose([T.ToTensor()])
+_heavy_skip_interval = 3  # Solo ejecutar inferencia cada N frames
+_heavy_frame_counter = 0
+_cached_heavy_detections = []  # Cache de detecciones (x, y, w, h)
 
 def worker_reconocimiento():
     """Hilo en segundo plano para procesar reconocimiento facial sin bloquear UI"""
@@ -127,32 +129,23 @@ def procesar_deteccion(frame, x, y, w, h):
         color_mostrar = (128, 128, 128) # Gris
         
         if best_match_index != -1:
-            # === ROSTRO CONOCIDO (EN CACHE) ===
             item = face_data_cache[best_match_index]
             
-            # Verificar si necesita actualización
-            # Si skip <= 0 Y no se está procesando ya
             if item['skip'] <= 0 and not item.get('pending', False):
                  item['pending'] = True
-                 # Enviar copia del recorte a la cola
                  rostro_recorte = frame[y:y+h, x:x+w].copy()
                  recognition_queue.put((rostro_recorte, item))
             else:
-                 # Decrementar contador si no está pendiente
                  if not item.get('pending', False):
                      item['skip'] -= 1
 
-            # Actualizar posición y visto
             item['x'], item['y'], item['w'], item['h'] = x, y, w, h
             item['seen'] = True
             
-            # Usar valores actuales del cache (pueden ser "Procesando" o el nombre anterior)
             nombre_mostrar = item['name']
             color_mostrar = item['color']
             
         else:
-            # === ROSTRO NUEVO ===
-            # Crear entrada inicial
             new_item = {
                 'x': x, 'y': y, 'w': w, 'h': h,
                 'name': "Procesando...",
@@ -173,7 +166,6 @@ def procesar_deteccion(frame, x, y, w, h):
         cv2.putText(frame, nombre_mostrar, (x, y - 25), 2, 1.1, color_mostrar, 1, cv2.LINE_AA)
         cv2.rectangle(frame, (x, y), (x + w, y + h), color_mostrar, 2)
         
-        # Incrementar contadores FRAME A FRAME según la clasificación actual
         if best_match_index != -1:
             cls = face_data_cache[best_match_index].get('clasificacion')
         else:
@@ -184,21 +176,13 @@ def procesar_deteccion(frame, x, y, w, h):
         elif cls == "FN": conteo_fn += 1
         elif cls == "TN": conteo_tn += 1
     else:
-        # Solo guardar si estamos en modo captura (no reconocimiento)
-        # y si se ha definido 'guardar' en el scope global (que se usa en 'visualizar')
-        # Dado que esta funcion solo detecta, la logica de guardado original estaba acoplada.
-        # Para mantener compatibilidad con 'visualizar' que llama a 'deteccion_facial':
         pass 
-        # NOTA: La lógica de guardar_frame se movió fuera del bucle de visualización en el código original?
-        # Revisando codigo anterior: guardar_frame se llamaba DENTRO del loop de detecciones.
-        # Restoramos comportamiento original.
-        if 'guardar' in globals() and guardar: # Chequeo defensivo
+        if 'guardar' in globals() and guardar: 
              guardar_frame(frame.copy(), x, y, w, h)
 
     return frame
 
 def detectar_rostro_yolo(frame):
-    # Aumentamos confianza a 0.6 para evitar detectar objetos random como caras
     results = yolo_model.predict(frame, stream=False, verbose=False, conf=0.6)[0]
     boxes = results.boxes.xyxy.cpu().numpy()
     
@@ -208,7 +192,6 @@ def detectar_rostro_yolo(frame):
         procesar_deteccion(frame, x, y, w, h)
     return frame
 
-# Variables globales para carga asíncrona de modelos
 cargando_modelo_estado = False
 modelo_cargando_nombre = ""
 
@@ -236,57 +219,83 @@ def cargar_modelo_en_background(nombre_modelo):
         cargando_modelo_estado = False
 
 def detectar_rostro_ssd(frame):
-    global ssd_model
+    global ssd_model, _heavy_frame_counter, _cached_heavy_detections
     if ssd_model is None:
         return frame
-            
-    # Preprocesamiento
-    transform = T.Compose([T.ToTensor()])
-    img_tensor = transform(frame).to('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    _heavy_frame_counter += 1
+    
+    if _heavy_frame_counter % _heavy_skip_interval != 0 and len(_cached_heavy_detections) > 0:
+        for (cx, cy, cw, ch) in _cached_heavy_detections:
+            procesar_deteccion(frame, cx, cy, cw, ch)
+        return frame
+    
+    img_tensor = ssd_transform(frame)
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    img_tensor = img_tensor.to(device)
     
     with torch.no_grad():
-        detections = ssd_model([img_tensor])[0]
+        if device == 'cuda':
+            with torch.amp.autocast('cuda'):
+                detections = ssd_model([img_tensor])[0]
+        else:
+            detections = ssd_model([img_tensor])[0]
     
-    # Filtrar detecciones (Clase 1 = Person en COCO)
+    new_detections = []
     confidence_threshold = 0.5
     for i in range(len(detections['boxes'])):
         score = detections['scores'][i].item()
         label = detections['labels'][i].item()
         
-        if score > confidence_threshold and label == 1: # 1 es Persona
+        if score > confidence_threshold and label == 1:  # 1 es Persona
             box = detections['boxes'][i].cpu().numpy()
             x1, y1, x2, y2 = box.astype(int)
             x, y = x1, y1
             w, h = x2 - x1, y2 - y1
+            new_detections.append((x, y, w, h))
             procesar_deteccion(frame, x, y, w, h)
-            
+    
+    _cached_heavy_detections = new_detections
     return frame
 
 def detectar_rostro_faster_rcnn(frame):
-    global faster_rcnn_model
+    global faster_rcnn_model, _heavy_frame_counter, _cached_heavy_detections
     if faster_rcnn_model is None:
         return frame
 
-    # Preprocesamiento
-    transform = T.Compose([T.ToTensor()])
-    img_tensor = transform(frame).to('cuda' if torch.cuda.is_available() else 'cpu')
+    _heavy_frame_counter += 1
+    
+    if _heavy_frame_counter % _heavy_skip_interval != 0 and len(_cached_heavy_detections) > 0:
+        for (cx, cy, cw, ch) in _cached_heavy_detections:
+            procesar_deteccion(frame, cx, cy, cw, ch)
+        return frame
+
+    img_tensor = ssd_transform(frame)
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    img_tensor = img_tensor.to(device)
     
     with torch.no_grad():
-        detections = faster_rcnn_model([img_tensor])[0]
+        if device == 'cuda':
+            with torch.amp.autocast('cuda'):
+                detections = faster_rcnn_model([img_tensor])[0]
+        else:
+            detections = faster_rcnn_model([img_tensor])[0]
     
-    # Filtrar
+    new_detections = []
     confidence_threshold = 0.5
     for i in range(len(detections['boxes'])):
         score = detections['scores'][i].item()
         label = detections['labels'][i].item()
         
-        if score > confidence_threshold and label == 1: # 1 es Persona
+        if score > confidence_threshold and label == 1:  # 1 es Persona
             box = detections['boxes'][i].cpu().numpy()
             x1, y1, x2, y2 = box.astype(int)
             x, y = x1, y1
             w, h = x2 - x1, y2 - y1
+            new_detections.append((x, y, w, h))
             procesar_deteccion(frame, x, y, w, h)
     
+    _cached_heavy_detections = new_detections
     return frame
 
 def deteccion_facial(frame):
@@ -298,7 +307,6 @@ def deteccion_facial(frame):
         cv2.putText(frame, texto, (20, h - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
         return frame
 
-    # 1. Marcar todos como no vistos al inicio del frame
     for face in face_data_cache:
         face['seen'] = False
 
@@ -310,19 +318,12 @@ def deteccion_facial(frame):
     elif MODELO_ACTIVO == "FASTER R-CNN":
         result_frame = detectar_rostro_faster_rcnn(frame)
     else:
-        # Default
         result_frame = detecting_rostro_yolo_wrapper(frame)
         
-    # 2. Limpiar caché de caras que ya no están visibles
-    # Filtramos la lista conservando solo los que seen == True
     face_data_cache[:] = [f for f in face_data_cache if f['seen']]
     
     return result_frame
 
-# Wrapper para mantener nombre consistente si es necesario, 
-# aunque en el codigo original se llamaba detectar_rostro_yolo directamente.
-# Haremos un alias temporal para no romper la logica del if/else si modificamos nombres,
-# pero aqui simplemente llamamos al existente.
 def detecting_rostro_yolo_wrapper(frame):
     return detectar_rostro_yolo(frame)
 
@@ -375,6 +376,7 @@ def visualizar():
         after_id = lblVideo.after(10, visualizar)
     else:
         if modo_reconocerFacial:
+           # Guardar resultados del video actual en la BD
            finalizar_guardar_resultado()
            
            # Revisar si hay un siguiente video en la cola
@@ -382,6 +384,9 @@ def visualizar():
            if len(cola_videos) > 0:
                # Pequeña pausa para no encolar eventos de Tkinter de forma conflictiva
                lblVideo.after(500, iniciar_siguiente_video_de_cola)
+           else:
+               # No hay más videos en la cola, limpiar UI completamente
+               finalizar_limpiar()
         else:
            finalizar_limpiar()
            
@@ -393,6 +398,8 @@ def activar_reconocimiento():
 
 def video_de_entrada(opcion):
     global cap, video_actual_path, detecciones_totales, tiempo_inicio_simulacion, frame_count
+    global conteo_tp, conteo_fp, conteo_fn, conteo_tn
+    
     if opcion == 1:
         path_video = filedialog.askopenfilename(
             filetypes=[("Video files", "*.mp4 *.avi")])
@@ -401,9 +408,10 @@ def video_de_entrada(opcion):
             video_actual_path = path_video
             lblInfoVideoPath.configure(text=os.path.basename(path_video))
             cap = cv2.VideoCapture(path_video)
-    if opcion == 2:
-        # Codigo original tenia video_actual_path fijo para camara
-        video_actual_path= "Camara" 
+        else:
+            return  # Usuario canceló, no hacer nada
+    elif opcion == 2:
+        video_actual_path = "Camara" 
         lblInfoVideoPath.configure(text="Cámara en Directo")
         cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
 
@@ -416,55 +424,112 @@ def video_de_entrada(opcion):
     btnEntrenar.configure(state="normal")
     btnReconocerFacial.configure(state="normal")
     
+    # Resetear TODOS los contadores para un inicio limpio
     detecciones_totales = 0
     frame_count = 0
+    conteo_tp = 0
+    conteo_fp = 0
+    conteo_fn = 0
+    conteo_tn = 0
     tiempo_inicio_simulacion = None
+    face_data_cache.clear()
+    _cached_heavy_detections.clear()
+    
     lblEstado.config(text="Estado: Procesando...", fg="blue")
+    lblDetecciones.config(text="Detecciones: 0")
+    lblClasificacion.config(text="TP: 0 | FP: 0 | FN: 0 | TN: 0")
     visualizar()
 
 def cargar_carpeta_videos():
     global cola_videos, cap
-    carpeta = filedialog.askdirectory(title="Seleccionar carpeta con videos MP4")
-    if not carpeta: return
+    from tkinter import messagebox
     
+    # El usuario selecciona directamente un video de la carpeta
+    archivo_inicio = filedialog.askopenfilename(
+        title="Seleccionar video desde donde iniciar el lote",
+        filetypes=[("Video files", "*.mp4 *.avi")]
+    )
+    if not archivo_inicio: return
+    
+    # Obtener la carpeta del video seleccionado
+    carpeta = os.path.dirname(archivo_inicio)
+    
+    # Buscar todos los videos en esa carpeta
     videos = glob.glob(os.path.join(carpeta, "*.mp4")) + glob.glob(os.path.join(carpeta, "*.avi"))
     if len(videos) == 0:
         print("No se encontraron videos en la carpeta seleccionada")
         return
-        
-    cola_videos.extend(videos)
-    print(f"Se agregaron {len(videos)} videos a la cola.")
+    
+    # Normalizar rutas para comparar correctamente
+    videos = [os.path.normpath(v) for v in videos]
+    archivo_inicio = os.path.normpath(archivo_inicio)
+    
+    # Ordenar videos alfabéticamente para asegurar orden correcto
+    videos.sort()
+    
+    # Buscar el índice del video seleccionado
+    indice_inicio = -1
+    for i, v in enumerate(videos):
+        if v == archivo_inicio:
+            indice_inicio = i
+            break
+    
+    if indice_inicio == -1:
+        # Fallback: procesar todos
+        messagebox.showwarning(
+            "Video no encontrado en lista",
+            f"No se pudo ubicar el video seleccionado en la lista.\n"
+            f"Se procesarán todos los {len(videos)} videos."
+        )
+        videos_a_procesar = videos
+    else:
+        videos_a_procesar = videos[indice_inicio:]
+    
+    cola_videos.extend(videos_a_procesar)
+    print(f"Se agregaron {len(videos_a_procesar)} videos a la cola (iniciando desde: {os.path.basename(videos_a_procesar[0])}).")
     
     if cap is None or not cap.isOpened():
         iniciar_siguiente_video_de_cola()
 
 def iniciar_siguiente_video_de_cola():
     global cola_videos, video_actual_path, cap, detecciones_totales, tiempo_inicio_simulacion, frame_count
+    global conteo_tp, conteo_fp, conteo_fn, conteo_tn
     
     if len(cola_videos) == 0:
         print("Todos los videos de la cola han sido procesados.")
         lblInfoVideoPath.configure(text="Procesamiento por lotes finalizado")
+        finalizar_limpiar()
         return
         
     video_path = cola_videos.pop(0)
     video_actual_path = video_path
     
     # Preparar el UI para el siguiente video
-    lblInfoVideoPath.configure(text=f"Lote: {os.path.basename(video_path)} ({len(cola_videos)} restantes)")
+    lblInfoVideoPath.configure(text=f"Lote [{MODELO_ACTIVO}]: {os.path.basename(video_path)} ({len(cola_videos)} restantes)")
     cap = cv2.VideoCapture(video_path)
     
     btnVIdeo.configure(state="disabled")
     btnCarpeta.configure(state="disabled")
     btnCamara.configure(state="disabled")
     btnEnd.configure(state="normal")
-    btnGuardar.configure(state="normal")
-    textNombre.config(state="normal")
-    btnEntrenar.configure(state="normal")
-    btnReconocerFacial.configure(state="normal")
+    btnGuardar.configure(state="disabled")
+    textNombre.config(state="disabled")
+    btnEntrenar.configure(state="disabled")
     
+    # Resetear TODOS los contadores para el siguiente video
     detecciones_totales = 0
     frame_count = 0
+    conteo_tp = 0
+    conteo_fp = 0
+    conteo_fn = 0
+    conteo_tn = 0
     tiempo_inicio_simulacion = None
+    face_data_cache.clear()
+    _cached_heavy_detections.clear()
+    
+    # Actualizar labels de la UI
+    lblDetecciones.config(text="Detecciones: 0")
+    lblClasificacion.config(text="TP: 0 | FP: 0 | FN: 0 | TN: 0")
     
     # Activar reconocimiento automáticamente
     activar_reconocimiento()
@@ -474,7 +539,7 @@ def iniciar_siguiente_video_de_cola():
 
 def finalizar_limpiar():
     global cap, after_id, modo_reconocerFacial, guardar
-    global conteo_tp, conteo_fp, conteo_fn, conteo_tn
+    global conteo_tp, conteo_fp, conteo_fn, conteo_tn, cola_videos
     
     if after_id is not None:
         lblVideo.after_cancel(after_id)
@@ -482,6 +547,7 @@ def finalizar_limpiar():
 
     if cap and cap.isOpened():
         cap.release()
+        cap = None
     
     modo_reconocerFacial = False
     guardar = False
@@ -491,6 +557,18 @@ def finalizar_limpiar():
     conteo_fp = 0
     conteo_fn = 0
     conteo_tn = 0
+    
+    # Limpiar caché y cola
+    face_data_cache.clear()
+    _cached_heavy_detections.clear()
+    cola_videos.clear()
+    
+    # Vaciar la cola de reconocimiento pendiente (para que no procese rostros del video anterior)
+    while not recognition_queue.empty():
+        try:
+            recognition_queue.get_nowait()
+        except queue.Empty:
+            break
     
     lblVideo.image = ""
     lblInfoVideoPath.configure(text="Ningún video seleccionado")
@@ -507,9 +585,7 @@ def finalizar_limpiar():
     lblDetecciones.config(text="Detecciones: 0")
     lblContador.config(text="Imágenes capturadas: 0/300")
     lblClasificacion.config(text="TP: 0 | FP: 0 | FN: 0 | TN: 0")
-    btnReconocerFacial.configure(state="disabled")
-    if cap and cap.isOpened():
-        cap.release()
+    btnReconocerFacial.configure(state="disabled", text="🔍 Reconocer Persona")
 
 def guardar_nombre(textNombre):
     global personName, guardar, frame_count
@@ -530,7 +606,7 @@ def guardar_nombre(textNombre):
 
 def finalizar_guardar_resultado():
     global cap, detecciones_totales, tiempo_inicio_simulacion, video_actual_path
-    global conteo_tp, conteo_fp, conteo_fn, conteo_tn
+    global conteo_tp, conteo_fp, conteo_fn, conteo_tn, face_data_cache
 
     tiempo_fin_simulacion = datetime.datetime.now()
     tiempo_total_ms = round((tiempo_fin_simulacion - tiempo_inicio_simulacion).total_seconds() * 1000, 3) if tiempo_inicio_simulacion else 0
@@ -542,14 +618,16 @@ def finalizar_guardar_resultado():
 
     print(f"\n{'='*50}")
     print(f"RESUMEN DE SESIÓN DE RECONOCIMIENTO")
+    print(f"Video: {os.path.basename(video_actual_path) if video_actual_path else 'Camara'}")
+    print(f"Modelo: {MODELO_ACTIVO}")
     print(f"{'='*50}")
-    print(f"  ✅ Verdaderos Positivos (TP): {conteo_tp}")
-    print(f"  ⚠️ Falsos Positivos (FP):     {conteo_fp}")
-    print(f"  ⚠️ Falsos Negativos (FN):     {conteo_fn}")
-    print(f"  ❌ Verdaderos Negativos (TN):  {conteo_tn}")
-    print(f"  📊 Total rostros evaluados:   {total_rostros_evaluados}")
-    print(f"  ✔️ Detecciones correctas:      {detecciones_correctas_real}")
-    print(f"  🔢 Total detecciones (frames): {detecciones_totales}")
+    print(f"Verdaderos Positivos (TP): {conteo_tp}")
+    print(f"Falsos Positivos (FP):     {conteo_fp}")
+    print(f"Falsos Negativos (FN):     {conteo_fn}")
+    print(f"Verdaderos Negativos (TN):  {conteo_tn}")
+    print(f"Total rostros evaluados:   {total_rostros_evaluados}")
+    print(f"Detecciones correctas:      {detecciones_correctas_real}")
+    print(f"Total detecciones (frames): {detecciones_totales}")
     print(f"{'='*50}\n")
 
     fecha_simulacion_str = tiempo_fin_simulacion.strftime('%Y-%m-%d %H:%M:%S')
@@ -564,7 +642,43 @@ def finalizar_guardar_resultado():
         configuracion="Video grabado con cámara de video vigilancia.",
         fecha_simulacion=fecha_simulacion_str
     )
-    limpiar()
+    
+    # Resetear contadores para el siguiente video (sin limpiar UI ni modo_reconocerFacial)
+    conteo_tp = 0
+    conteo_fp = 0
+    conteo_fn = 0
+    conteo_tn = 0
+    detecciones_totales = 0
+    tiempo_inicio_simulacion = None
+    face_data_cache.clear()
+    _cached_heavy_detections.clear()
+    
+    # Liberar el video actual
+    if cap and cap.isOpened():
+        cap.release()
+
+def _asegurar_conexion():
+    """Verifica que la conexión a la BD esté activa. Si no, reconecta."""
+    global conn
+    try:
+        if conn is not None:
+            # Prueba rápida para verificar si la conexión sigue viva
+            conn.cursor().execute("SELECT 1").close()
+            return True
+    except Exception:
+        print("Conexión a BD perdida. Reconectando...")
+        conn = None
+    
+    # Intentar reconectar
+    try:
+        conn = Conexion.get_db_connection()
+        if conn is not None:
+            print("Reconexión exitosa a la base de datos.")
+            return True
+    except Exception as e:
+        print(f"Error al reconectar: {e}")
+    
+    return False
 
 def insertar_Resultado_Deteccion(algoritmo, video_prueba, detecciones_correctas, total_rostros_video, tiempo_respuesta_ms, falsos_positivos, falsos_negativos, configuracion, fecha_simulacion):
     """
@@ -572,8 +686,9 @@ def insertar_Resultado_Deteccion(algoritmo, video_prueba, detecciones_correctas,
     """
     global conn
     
-    if conn is None:
-        print("Error: No se puede conectar a la base de datos.")
+    # Asegurar que la conexión esté activa (reconectar si es necesario)
+    if not _asegurar_conexion():
+        print(f"ERROR CRÍTICO: No se pudo guardar el resultado del video '{video_prueba}'. Sin conexión a BD.")
         return
 
     cursor = conn.cursor()
@@ -606,16 +721,28 @@ def insertar_Resultado_Deteccion(algoritmo, video_prueba, detecciones_correctas,
         fecha_simulacion,
         configuracion,
         exactitud
-
     )
     try:
         # Pasa los parámetros a la ejecución.
         cursor.execute(sp_call, params)
         conn.commit()
-        print("Datos insertados correctamente en la base de datos.")
-        finalizar_limpiar()
+        print(f"Datos insertados correctamente en la base de datos. (Modelo: {algoritmo}, Video: {video_prueba})")
     except pyodbc.Error as ex:
-        print(f"Error al insertar datos: {ex.args[0]}")
+        print(f"Error al insertar datos: {ex}")
+        # Intentar reconectar y reintentar UNA vez
+        print("Reintentando con nueva conexión...")
+        try:
+            conn = Conexion.get_db_connection()
+            if conn:
+                cursor2 = conn.cursor()
+                cursor2.execute(sp_call, params)
+                conn.commit()
+                cursor2.close()
+                print(f"Reintento exitoso. Datos guardados. (Modelo: {algoritmo}, Video: {video_prueba})")
+            else:
+                print(f"FALLO TOTAL: No se pudieron guardar los datos del video '{video_prueba}'.")
+        except Exception as ex2:
+            print(f"FALLO en reintento: {ex2}")
     finally:
         cursor.close()
 
@@ -627,7 +754,7 @@ def cargar_formulario():
     global btnGuardar, textNombre, guardar, btnEntrenar, btnReconocerFacial
     global lblEstado, lblDetecciones, lblContador, lblClasificacion, cap, MODELO_ACTIVO
     
-    cap = None  # Inicializar cap como None
+    cap = None
     
     root = Tk()
     root.title("Sistema de Reconocimiento Facial con YOLO")
@@ -798,7 +925,7 @@ def cargar_formulario():
     btnRegistro.pack(fill=X, padx=10, pady=8, ipady=5)
 
     # --- Botón Finalizar ---
-    btnEnd = Button(panel_controles, text="⏹ Finalizar", font=("Arial", 10, "bold"),
+    btnEnd = Button(panel_controles, text="Finalizar", font=("Arial", 10, "bold"),
                    bg="#e74c3c", fg="white", relief=FLAT, cursor="hand2",
                    state="disabled", command=finalizar_limpiar)
     btnEnd.pack(fill=X, padx=10, pady=8, ipady=5)

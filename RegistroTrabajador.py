@@ -5,41 +5,33 @@ import pyodbc
 def RegistroPersona(conn):
     global nombre,ap_paterno,ap_materno,dni,direccion,correo,celular 
     """Abre una ventana con el formulario de registro de personas"""
-    # Usar Toplevel en lugar de Tk para evitar múltiples instancias de root
     ventana_registro = Toplevel()
     ventana_registro.title("Registro de Personal")
     ventana_registro.geometry("1060x550")  # Tamaño fijo
     ventana_registro.resizable(False, False)  # No se puede redimensionar
     ventana_registro.configure(bg="#ecf0f1")
     
-    # Hacer la ventana modal
     ventana_registro.transient() 
     ventana_registro.grab_set()
 
-    # Título
     frame_titulo = Frame(ventana_registro, bg="#475566")
     frame_titulo.pack(fill=X)
     Label(frame_titulo, text="👤 REGISTRO DE PERSONAL", font=("Arial", 16, "bold"),
           bg="#475566", fg="white", pady=15).pack()
     
-    # Contenedor principal
     main_container = Frame(ventana_registro, bg="#ecf0f1")
     main_container.pack(fill=BOTH, expand=True, padx=40, pady=20)
     
-    # Frame del formulario con fondo blanco
     frame_form = Frame(main_container, bg="white", relief=FLAT)
     frame_form.pack(fill=BOTH, expand=True, padx=15, pady=10)
     
-    # Padding interno
     frame_interno = Frame(frame_form, bg="white")
     frame_interno.pack(fill=BOTH, expand=True, padx=30, pady=20)
     
-    # Configurar grid para que las columnas se expandan proporcionalmente
     frame_interno.columnconfigure(0, weight=1)
     frame_interno.columnconfigure(1, weight=1)
     frame_interno.columnconfigure(2, weight=1)
     
-    # Función para crear campos de entrada
     def crear_campo(padre, label_text, row, col, es_requerido=True):
         texto_label = f"{label_text} {'*' if es_requerido else ''}"
         Label(padre, text=texto_label, font=("Arial", 10, "bold"),
@@ -50,31 +42,24 @@ def RegistroPersona(conn):
         entry.grid(row=row+1, column=col, sticky=EW, padx=5, ipady=6)
         return entry
     
-    # ========== CAMPOS DEL FORMULARIO (3 COLUMNAS) ==========
-    
-    # Fila 1: Nombres, Apellido Paterno, Apellido Materno
     entry_nombre = crear_campo(frame_interno, "Nombres", 0, 0)
     entry_ap_paterno = crear_campo(frame_interno, "Apellido Paterno", 0, 1)
     entry_ap_materno = crear_campo(frame_interno, "Apellido Materno", 0, 2)
     
-    # Fila 2: DNI, Correo, Celular
     entry_dni = crear_campo(frame_interno, "DNI", 2, 0)
     entry_correo = crear_campo(frame_interno, "Correo Electrónico", 2, 1, es_requerido=False)
     entry_celular = crear_campo(frame_interno, "Número Celular", 2, 2, es_requerido=False)
     
-    # Fila 3: Dirección (ocupa las 3 columnas)
     Label(frame_interno, text="Dirección", font=("Arial", 10, "bold"),
           bg="white", fg="#2c3e50", anchor=W).grid(
               row=4, column=0, columnspan=3, sticky=W, padx=5, pady=(10, 2))
     entry_direccion = Entry(frame_interno, font=("Arial", 10), relief=SOLID, bd=1)
     entry_direccion.grid(row=5, column=0, columnspan=3, sticky=EW, padx=5, ipady=6)
     
-    # Tipo de Trabajador
     Label(frame_interno, text="Tipo de Trabajador *", font=("Arial", 10, "bold"),
           bg="white", fg="#2c3e50", anchor=W).grid(
               row=6, column=0, columnspan=3, sticky=W, padx=5, pady=(15, 5))
     
-    # IMPORTANTE: Vincular la variable a la ventana para evitar garbage collection
     tipo_var = StringVar(master=ventana_registro, value="1")
     ventana_registro.tipo_var = tipo_var 
 
@@ -90,17 +75,13 @@ def RegistroPersona(conn):
     Radiobutton(frame_radios, text="Jefe", variable=tipo_var, value="4",
                 font=("Arial", 9), bg="white").pack(side=LEFT)
     
-    # Label de campos requeridos
     Label(frame_interno, text="* Campos obligatorios", font=("Arial", 8, "italic"),
           bg="white", fg="#95a5a6").grid(
               row=8, column=0, columnspan=3, sticky=W, padx=5, pady=(8, 5))
     
-    # Mensaje de estado
     lbl_mensaje = Label(frame_interno, text="", font=("Arial", 9, "bold"),
                        bg="white", fg="green")
     lbl_mensaje.grid(row=9, column=0, columnspan=3, pady=8)
-    
-    # ========== FUNCIONES DE LOS BOTONES ==========
     
     def validar_campos():
         """Valida que los campos obligatorios estén completos"""
@@ -136,7 +117,6 @@ def RegistroPersona(conn):
         correo = entry_correo.get().strip()
         celular = entry_celular.get().strip()
         
-        # Obtener valor de la variable de control
         tipo = int(tipo_var.get())
         print(f"Tipo guardado: {tipo}") # Debug
 

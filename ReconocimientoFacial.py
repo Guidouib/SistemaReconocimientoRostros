@@ -54,35 +54,21 @@ def ReconocimiendoFacial(frame, x, y, w, h):
         if not model_loaded:
             return "Sin Modelo", (0, 0, 255), -1.0, "FILTRADO"
 
-    # =============================
-    # 1️⃣ Recorte del rostro
-    # =============================
     rostro = frame[y:y+h, x:x+w]
 
     # Validación defensiva
     if rostro.size == 0:
         return "Desconocido", (0, 0, 255), -1.0, "FILTRADO"
 
-    # =============================
-    # 2️⃣ FILTRO POR TAMAÑO MÍNIMO
-    # =============================
     if w < 80 or h < 80:
         return "Desconocido", (0, 0, 255), -1.0, "FILTRADO"
 
-    # =============================
-    # 3️⃣ FILTRO DE NITIDEZ (BLUR)
-    # =============================
     gray = cv2.cvtColor(rostro, cv2.COLOR_BGR2GRAY)
     blur = cv2.Laplacian(gray, cv2.CV_64F).var()
 
     if blur < 50:
         return "Desconocido", (0, 0, 255), -1.0, "FILTRADO"
 
-    # =============================
-    # 4️⃣ OBTENER EMBEDDING (ArcFace)
-    # =============================
-    
-    # Umbrales de clasificación (distancia coseno)
     UMBRAL_TP = 0.35       # dist < 0.35 → Reconocimiento seguro (TP)
     UMBRAL_RECONOCER = 0.45 # dist < 0.45 → Se reconoce (pero si 0.35-0.45 es FP potencial)
     UMBRAL_FN = 0.55        # dist < 0.55 → FN potencial (muy cerca del umbral, posible persona conocida)
@@ -109,28 +95,21 @@ def ReconocimiendoFacial(frame, x, y, w, h):
                 min_dist = dist
                 best_match_index = i
         
-        # =============================
-        # 5️⃣ CLASIFICACIÓN AUTOMÁTICA
-        # =============================
         candidato = known_names[best_match_index] if best_match_index != -1 else "Nadie"
         
         if min_dist < UMBRAL_TP and best_match_index != -1:
-            # ✅ Reconocimiento seguro → Verdadero Positivo
             nombre = known_names[best_match_index]
             color = (0, 255, 0)  # Verde
             clasificacion = "TP"
         elif min_dist < UMBRAL_RECONOCER and best_match_index != -1:
-            # ⚠️ Reconocido pero con baja confianza → Falso Positivo potencial
             nombre = known_names[best_match_index]
             color = (0, 165, 255)  # Naranja
             clasificacion = "FP"
         elif min_dist < UMBRAL_FN:
-            # ⚠️ No reconocido pero cerca del umbral → Falso Negativo potencial
             nombre = "Desconocido"
             color = (0, 100, 255)  # Rojo-naranja
             clasificacion = "FN"
         else:
-            # ❌ Definitivamente desconocido → Verdadero Negativo
             nombre = "Desconocido"
             color = (0, 0, 255)  # Rojo
             clasificacion = "TN"

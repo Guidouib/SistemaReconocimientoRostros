@@ -34,26 +34,20 @@ def entrenar_reconocedor_facil():
                 
             imagePath = os.path.join(personPath, fileName)
             try:
-                # Generar embedding con ArcFace
-                # enforce_detection=True para asegurar que SOLO aprendamos caras reales
-                # Esto filtrará fotos oscuras, borrosas o sin rostros que causaban el error de dist=0.02
                 embedding_objs = DeepFace.represent(
                     img_path=imagePath, 
                     model_name="ArcFace", 
                     enforce_detection=True
                 )
                 
-                # DeepFace.represent devuelve una lista, tomamos el primer (y unico) rostro
                 if embedding_objs:
                     embedding = embedding_objs[0]["embedding"]
                     known_embeddings.append(embedding)
                     known_names.append(nameDir)
                     
             except Exception as e:
-                # Si no detecta cara, DeepFace lanza excepción. Lo ignoramos correctamente.
                 print(f"Saltando {fileName}: No se detectó rostro confiable ({e})")
 
-    # Guardar los embeddings y nombres en un archivo pickle
     data = {
         "embeddings": known_embeddings,
         "names": known_names
