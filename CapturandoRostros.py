@@ -17,6 +17,7 @@ import torchvision
 from torchvision import transforms as T
 import threading
 import queue
+import metricas
 
 frame_count = 0
 limite_imagenes = 300
@@ -35,6 +36,7 @@ detecciones_totales = 0
 video_actual_path = ""
 tiempo_inicio_simulacion = None
 after_id = None
+frames_procesados = 0  # Contador de frames para cálculo de tiempo/frame
 
 # Contadores automáticos de clasificación
 conteo_tp = 0
@@ -328,13 +330,14 @@ def detecting_rostro_yolo_wrapper(frame):
     return detectar_rostro_yolo(frame)
 
 def visualizar():
-    global cap, personPath, tiempo_inicio_simulacion, detecciones_totales, after_id, guardar
+    global cap, personPath, tiempo_inicio_simulacion, detecciones_totales, after_id, guardar, frames_procesados
     ret, frame = cap.read()
 
     if not cap or not cap.isOpened():
         return
 
     if ret == True:
+        frames_procesados += 1
         if tiempo_inicio_simulacion is None:
             tiempo_inicio_simulacion = datetime.datetime.now()
         
@@ -398,7 +401,7 @@ def activar_reconocimiento():
 
 def video_de_entrada(opcion):
     global cap, video_actual_path, detecciones_totales, tiempo_inicio_simulacion, frame_count
-    global conteo_tp, conteo_fp, conteo_fn, conteo_tn
+    global conteo_tp, conteo_fp, conteo_fn, conteo_tn, frames_procesados, limite_imagenes
     
     if opcion == 1:
         path_video = filedialog.askopenfilename(
@@ -408,12 +411,22 @@ def video_de_entrada(opcion):
             video_actual_path = path_video
             lblInfoVideoPath.configure(text=os.path.basename(path_video))
             cap = cv2.VideoCapture(path_video)
+            
+            # Adaptar límite de imágenes según la duración del video
+            total_frames_video = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            if total_frames_video > 0:
+                limite_imagenes = total_frames_video
+            else:
+                limite_imagenes = 300  # Fallback si no se puede leer
+            print(f"Límite de captura adaptado al video: {limite_imagenes} frames")
         else:
             return  # Usuario canceló, no hacer nada
     elif opcion == 2:
         video_actual_path = "Camara" 
         lblInfoVideoPath.configure(text="Cámara en Directo")
         cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        limite_imagenes = 1000  # Cámara: límite fijo de 1000 rostros
+        print(f"Límite de captura para cámara: {limite_imagenes} frames")
 
     btnVIdeo.configure(state="disabled")
     btnCarpeta.configure(state="disabled")
@@ -427,6 +440,7 @@ def video_de_entrada(opcion):
     # Resetear TODOS los contadores para un inicio limpio
     detecciones_totales = 0
     frame_count = 0
+    frames_procesados = 0
     conteo_tp = 0
     conteo_fp = 0
     conteo_fn = 0
@@ -438,6 +452,7 @@ def video_de_entrada(opcion):
     lblEstado.config(text="Estado: Procesando...", fg="blue")
     lblDetecciones.config(text="Detecciones: 0")
     lblClasificacion.config(text="TP: 0 | FP: 0 | FN: 0 | TN: 0")
+    lblContador.config(text=f"Imágenes capturadas: 0/{limite_imagenes}")
     visualizar()
 
 def cargar_carpeta_videos():
@@ -493,7 +508,7 @@ def cargar_carpeta_videos():
 
 def iniciar_siguiente_video_de_cola():
     global cola_videos, video_actual_path, cap, detecciones_totales, tiempo_inicio_simulacion, frame_count
-    global conteo_tp, conteo_fp, conteo_fn, conteo_tn
+    global conteo_tp, conteo_fp, conteo_fn, conteo_tn, frames_procesados
     
     if len(cola_videos) == 0:
         print("Todos los videos de la cola han sido procesados.")
@@ -519,6 +534,7 @@ def iniciar_siguiente_video_de_cola():
     # Resetear TODOS los contadores para el siguiente video
     detecciones_totales = 0
     frame_count = 0
+    frames_procesados = 0
     conteo_tp = 0
     conteo_fp = 0
     conteo_fn = 0
@@ -606,41 +622,37 @@ def guardar_nombre(textNombre):
 
 def finalizar_guardar_resultado():
     global cap, detecciones_totales, tiempo_inicio_simulacion, video_actual_path
-    global conteo_tp, conteo_fp, conteo_fn, conteo_tn, face_data_cache
+    global conteo_tp, conteo_fp, conteo_fn, conteo_tn, face_data_cache, frames_procesados
 
     tiempo_fin_simulacion = datetime.datetime.now()
     tiempo_total_ms = round((tiempo_fin_simulacion - tiempo_inicio_simulacion).total_seconds() * 1000, 3) if tiempo_inicio_simulacion else 0
 
-    # Detecciones correctas = TP (verdaderos positivos)
-    detecciones_correctas_real = conteo_tp
-    # Total de rostros únicos evaluados (clasificados)
-    total_rostros_evaluados = conteo_tp + conteo_fp + conteo_fn + conteo_tn
-
-    print(f"\n{'='*50}")
-    print(f"RESUMEN DE SESIÓN DE RECONOCIMIENTO")
-    print(f"Video: {os.path.basename(video_actual_path) if video_actual_path else 'Camara'}")
-    print(f"Modelo: {MODELO_ACTIVO}")
-    print(f"{'='*50}")
-    print(f"Verdaderos Positivos (TP): {conteo_tp}")
-    print(f"Falsos Positivos (FP):     {conteo_fp}")
-    print(f"Falsos Negativos (FN):     {conteo_fn}")
-    print(f"Verdaderos Negativos (TN):  {conteo_tn}")
-    print(f"Total rostros evaluados:   {total_rostros_evaluados}")
-    print(f"Detecciones correctas:      {detecciones_correctas_real}")
-    print(f"Total detecciones (frames): {detecciones_totales}")
-    print(f"{'='*50}\n")
+    # Generar reporte completo usando el módulo de métricas
+    video_nombre = os.path.basename(video_actual_path) if video_actual_path else "Camara en Directo"
+    reporte = metricas.generar_reporte(
+        tp=conteo_tp, fp=conteo_fp, fn=conteo_fn, tn=conteo_tn,
+        tiempo_total_ms=tiempo_total_ms, total_frames=frames_procesados,
+        modelo=MODELO_ACTIVO, video=video_nombre
+    )
+    
+    # Imprimir reporte completo en consola
+    print(reporte["reporte_texto"])
 
     fecha_simulacion_str = tiempo_fin_simulacion.strftime('%Y-%m-%d %H:%M:%S')
     insertar_Resultado_Deteccion(
         algoritmo=MODELO_ACTIVO, 
-        video_prueba=os.path.basename(video_actual_path) if video_actual_path else "Camara en Directo",
-        detecciones_correctas=detecciones_correctas_real,
-        total_rostros_video=total_rostros_evaluados,
+        video_prueba=video_nombre,
+        detecciones_correctas=reporte["tp"],
+        total_rostros_video=reporte["total_evaluados"],
         tiempo_respuesta_ms=tiempo_total_ms,
-        falsos_positivos=conteo_fp,
-        falsos_negativos=conteo_fn,
+        falsos_positivos=reporte["fp"],
+        falsos_negativos=reporte["fn"],
         configuracion="Video grabado con cámara de video vigilancia.",
-        fecha_simulacion=fecha_simulacion_str
+        fecha_simulacion=fecha_simulacion_str,
+        recall=reporte["recall"],
+        f1_score=reporte["f1_score"],
+        especificidad=reporte["especificidad"],
+        tiempo_promedio_frame=reporte["tiempo_promedio_frame"]
     )
     
     # Resetear contadores para el siguiente video (sin limpiar UI ni modo_reconocerFacial)
@@ -649,6 +661,7 @@ def finalizar_guardar_resultado():
     conteo_fn = 0
     conteo_tn = 0
     detecciones_totales = 0
+    frames_procesados = 0
     tiempo_inicio_simulacion = None
     face_data_cache.clear()
     _cached_heavy_detections.clear()
@@ -680,9 +693,10 @@ def _asegurar_conexion():
     
     return False
 
-def insertar_Resultado_Deteccion(algoritmo, video_prueba, detecciones_correctas, total_rostros_video, tiempo_respuesta_ms, falsos_positivos, falsos_negativos, configuracion, fecha_simulacion):
+def insertar_Resultado_Deteccion(algoritmo, video_prueba, detecciones_correctas, total_rostros_video, tiempo_respuesta_ms, falsos_positivos, falsos_negativos, configuracion, fecha_simulacion, recall=0, f1_score=0, especificidad=0, tiempo_promedio_frame=0):
     """
     Inserta un nuevo registro en la tabla SI_FinRendimientoModelos llamando a un procedimiento almacenado.
+    Incluye métricas completas: Precisión, Exactitud, Recall, F1-Score, Especificidad y Tiempo/Frame.
     """
     global conn
     
@@ -693,21 +707,16 @@ def insertar_Resultado_Deteccion(algoritmo, video_prueba, detecciones_correctas,
 
     cursor = conn.cursor()
     
-    # Prepara la llamada al Stored Procedure
-    sp_call = "EXEC DET_InsertDataDeteccionModelo_SP ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?"
+    # Calcular métricas usando el módulo centralizado
+    precision = metricas.calcular_precision(detecciones_correctas, falsos_positivos)
     
-    # La precisión = TP / (TP + FP)
-    denominador_precision = detecciones_correctas + falsos_positivos
-    precision = (detecciones_correctas / denominador_precision) * 100 if denominador_precision > 0 else 0
-    
-    # Exactitud = (TP + TN) / Total
-    # Rescatamos matemáticamente los Verdaderos Negativos (TN)
+    # Calcular Exactitud usando el módulo centralizado
     verdaderos_negativos = total_rostros_video - (detecciones_correctas + falsos_positivos + falsos_negativos)
     if verdaderos_negativos < 0: verdaderos_negativos = 0 # Protección
+    exactitud = metricas.calcular_exactitud(detecciones_correctas, verdaderos_negativos, total_rostros_video)
     
-    # total_casos_evaluados es detecciones_totales (total_rostros_video), que incluye TP, FP, FN, TN
-    total_casos_evaluados = total_rostros_video
-    exactitud = ((detecciones_correctas + verdaderos_negativos) / total_casos_evaluados) * 100 if total_casos_evaluados > 0 else 0
+    # Prepara la llamada al Stored Procedure (los 11 parámetros originales)
+    sp_call = "EXEC DET_InsertDataDeteccionModelo_SP ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?"
     
     params = (
         algoritmo,
@@ -722,6 +731,10 @@ def insertar_Resultado_Deteccion(algoritmo, video_prueba, detecciones_correctas,
         configuracion,
         exactitud
     )
+    
+    # Imprimir métricas adicionales calculadas por el módulo de métricas
+    print(f"  [MÉTRICAS ADICIONALES] Recall: {recall:.2f}% | F1-Score: {f1_score:.2f}% | Especificidad: {especificidad:.2f}% | Tiempo/Frame: {tiempo_promedio_frame:.2f} ms")
+    
     try:
         # Pasa los parámetros a la ejecución.
         cursor.execute(sp_call, params)

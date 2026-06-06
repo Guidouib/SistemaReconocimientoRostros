@@ -58,20 +58,20 @@ def ReconocimiendoFacial(frame, x, y, w, h):
 
     # Validación defensiva
     if rostro.size == 0:
-        return "Desconocido", (0, 0, 255), -1.0, "FILTRADO"
+        return "No Autorizado", (0, 0, 255), -1.0, "FILTRADO"
 
     if w < 80 or h < 80:
-        return "Desconocido", (0, 0, 255), -1.0, "FILTRADO"
+        return "No Autorizado", (0, 0, 255), -1.0, "FILTRADO"
 
     gray = cv2.cvtColor(rostro, cv2.COLOR_BGR2GRAY)
     blur = cv2.Laplacian(gray, cv2.CV_64F).var()
 
     if blur < 50:
-        return "Desconocido", (0, 0, 255), -1.0, "FILTRADO"
+        return "No Autorizado", (0, 0, 255), -1.0, "FILTRADO"
 
-    UMBRAL_TP = 0.35       # dist < 0.35 → Reconocimiento seguro (TP)
-    UMBRAL_RECONOCER = 0.45 # dist < 0.45 → Se reconoce (pero si 0.35-0.45 es FP potencial)
-    UMBRAL_FN = 0.55        # dist < 0.55 → FN potencial (muy cerca del umbral, posible persona conocida)
+    UMBRAL_TP = 0.50       # dist < 0.50 → Reconocimiento seguro (TP)
+    UMBRAL_RECONOCER = 0.60 # dist < 0.60 → Se reconoce (pero si 0.50-0.60 es FP potencial)
+    UMBRAL_FN = 0.70        # dist < 0.70 → FN potencial (muy cerca del umbral, posible persona conocida)
 
     try:
         results = DeepFace.represent(
@@ -81,7 +81,7 @@ def ReconocimiendoFacial(frame, x, y, w, h):
         )
         
         if not results:
-             return "Desconocido", (0, 0, 255), -1.0, "FILTRADO"
+             return "No Autorizado", (0, 0, 255), -1.0, "FILTRADO"
 
         target_embedding = results[0]["embedding"]
         target_embedding = np.array(target_embedding)
@@ -98,19 +98,19 @@ def ReconocimiendoFacial(frame, x, y, w, h):
         candidato = known_names[best_match_index] if best_match_index != -1 else "Nadie"
         
         if min_dist < UMBRAL_TP and best_match_index != -1:
-            nombre = known_names[best_match_index]
+            nombre = "Autorizado"
             color = (0, 255, 0)  # Verde
             clasificacion = "TP"
         elif min_dist < UMBRAL_RECONOCER and best_match_index != -1:
-            nombre = known_names[best_match_index]
+            nombre = "Autorizado"
             color = (0, 165, 255)  # Naranja
             clasificacion = "FP"
         elif min_dist < UMBRAL_FN:
-            nombre = "Desconocido"
+            nombre = "No Autorizado"
             color = (0, 100, 255)  # Rojo-naranja
             clasificacion = "FN"
         else:
-            nombre = "Desconocido"
+            nombre = "No Autorizado"
             color = (0, 0, 255)  # Rojo
             clasificacion = "TN"
         
