@@ -38,11 +38,16 @@ tiempo_inicio_simulacion = None
 after_id = None
 frames_procesados = 0  # Contador de frames para cálculo de tiempo/frame
 
-# Contadores automáticos de clasificación
+# Contadores automáticos de clasificación (modo con reconocimiento)
 conteo_tp = 0
 conteo_fp = 0
 conteo_fn = 0
 conteo_tn = 0
+
+# === MODO SIN RECONOCIMIENTO (DETECCIÓN PURA) ===
+# Solo mide velocidad y volumen de detección, sin identificar a la persona.
+# Responde a: ¿qué tan rápido y cuánto detecta el modelo sin importar quién es?
+modo_deteccion_pura = False
 
 # Cache para reconocimiento facial
 face_data_cache = []
@@ -50,6 +55,7 @@ import glob
 
 recognition_queue = queue.Queue()
 cola_videos = []
+modo_batch_seleccionado = "reconocimiento"  # Por defecto: "reconocimiento" o "deteccion_pura"
 
 # Optimización para modelos pesados (SSD, Faster R-CNN)
 ssd_transform = T.Compose([T.ToTensor()])
@@ -105,6 +111,14 @@ def procesar_deteccion(frame, x, y, w, h):
     
     cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
     detecciones_totales += 1
+    
+    # === MODO DETECCIÓN PURA (sin reconocimiento) ===
+    # Solo marca la detección visualmente y cuenta. No ejecuta ArcFace.
+    if modo_deteccion_pura:
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 165, 0), 2)
+        cv2.putText(frame, "Detectado", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 
+                    0.7, (255, 165, 0), 2, cv2.LINE_AA)
+        return frame
     
     if modo_reconocerFacial:
         # Lógica de Caché para optimización
@@ -357,7 +371,7 @@ def visualizar():
         frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
         
         # Logica de preparacion de directorios
-        if guardar == True and btnGuardar['state'] == DISABLED or modo_reconocerFacial:
+        if guardar == True and btnGuardar['state'] == DISABLED or modo_reconocerFacial or modo_deteccion_pura:
              # Solo crear directorios si vamos a guardar realmente
              if guardar:
                 personName = textNombre.get()
@@ -368,7 +382,10 @@ def visualizar():
 
              frame = deteccion_facial(frame) 
              lblDetecciones.config(text=f"Detecciones: {detecciones_totales}")
-             lblClasificacion.config(text=f"TP: {conteo_tp} | FP: {conteo_fp} | FN: {conteo_fn} | TN: {conteo_tn}")
+             if modo_deteccion_pura:
+                 lblClasificacion.config(text=f"Modo: DETECCIÓN PURA | Frames: {frames_procesados}")
+             else:
+                 lblClasificacion.config(text=f"TP: {conteo_tp} | FP: {conteo_fp} | FN: {conteo_fn} | TN: {conteo_tn}")
 
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         im = Image.fromarray(frame)
@@ -390,14 +407,35 @@ def visualizar():
            else:
                # No hay más videos en la cola, limpiar UI completamente
                finalizar_limpiar()
+        elif modo_deteccion_pura:
+           # Guardar resultados del modo SIN reconocimiento en la BD
+           finalizar_guardar_resultado_puro()
+           
+           # Revisar si hay un siguiente video en la cola
+           if len(cola_videos) > 0:
+               lblVideo.after(500, iniciar_siguiente_video_de_cola)
+           else:
+               finalizar_limpiar()
         else:
            finalizar_limpiar()
            
 def activar_reconocimiento():
-    global modo_reconocerFacial
+    global modo_reconocerFacial, modo_deteccion_pura
     modo_reconocerFacial = True
+    modo_deteccion_pura = False  # Mutuamente excluyentes
     btnReconocerFacial.configure(state="disabled", text="✓ Reconocimiento Activo")
+    btnDeteccionPura.configure(state="disabled")
     lblEstado.config(text="Estado: Reconociendo rostros", fg="green")
+
+def activar_deteccion_pura():
+    """Activa el modo de detección pura (sin reconocimiento facial).
+    Solo cuenta detecciones, mide tiempo y FPS. No identifica personas."""
+    global modo_deteccion_pura, modo_reconocerFacial
+    modo_deteccion_pura = True
+    modo_reconocerFacial = False  # Mutuamente excluyentes
+    btnDeteccionPura.configure(state="disabled", text="✓ Detección Pura Activa")
+    btnReconocerFacial.configure(state="disabled")
+    lblEstado.config(text="Estado: Detección pura (sin reconocimiento)", fg="orange")
 
 def video_de_entrada(opcion):
     global cap, video_actual_path, detecciones_totales, tiempo_inicio_simulacion, frame_count
@@ -436,6 +474,7 @@ def video_de_entrada(opcion):
     textNombre.config(state="normal")
     btnEntrenar.configure(state="normal")
     btnReconocerFacial.configure(state="normal")
+    btnDeteccionPura.configure(state="normal")
     
     # Resetear TODOS los contadores para un inicio limpio
     detecciones_totales = 0
@@ -456,8 +495,23 @@ def video_de_entrada(opcion):
     visualizar()
 
 def cargar_carpeta_videos():
-    global cola_videos, cap
+    global cola_videos, cap, modo_reconocerFacial, modo_deteccion_pura
     from tkinter import messagebox
+    
+    # Preguntar al usuario qué modo usar para el lote
+    respuesta = messagebox.askyesnocancel(
+        "Modo de procesamiento por lotes",
+        "¿En qué modo desea procesar los videos?\n\n"
+        "• SÍ → Con Reconocimiento Facial (TP/FP/FN/TN, ArcFace)\n"
+        "• NO → Detección Pura (solo velocidad y volumen, sin identidad)\n"
+        "• CANCELAR → Volver"
+    )
+    
+    if respuesta is None:  # Canceló
+        return
+    
+    # Configurar el modo según la respuesta
+    modo_batch_reconocer = respuesta  # True = reconocimiento, False = detección pura
     
     # El usuario selecciona directamente un video de la carpeta
     archivo_inicio = filedialog.askopenfilename(
@@ -503,6 +557,11 @@ def cargar_carpeta_videos():
     cola_videos.extend(videos_a_procesar)
     print(f"Se agregaron {len(videos_a_procesar)} videos a la cola (iniciando desde: {os.path.basename(videos_a_procesar[0])}).")
     
+    # Guardar el modo elegido para usarlo en cada video de la cola
+    global modo_batch_seleccionado
+    modo_batch_seleccionado = "reconocimiento" if modo_batch_reconocer else "deteccion_pura"
+    print(f"Modo seleccionado para el lote: {modo_batch_seleccionado.upper()}")
+    
     if cap is None or not cap.isOpened():
         iniciar_siguiente_video_de_cola()
 
@@ -547,14 +606,17 @@ def iniciar_siguiente_video_de_cola():
     lblDetecciones.config(text="Detecciones: 0")
     lblClasificacion.config(text="TP: 0 | FP: 0 | FN: 0 | TN: 0")
     
-    # Activar reconocimiento automáticamente
-    activar_reconocimiento()
+    # Activar el modo correspondiente según lo elegido en el lote
+    if modo_batch_seleccionado == "deteccion_pura":
+        activar_deteccion_pura()
+    else:
+        activar_reconocimiento()
     
     # Iniciar la visualización
     visualizar()
 
 def finalizar_limpiar():
-    global cap, after_id, modo_reconocerFacial, guardar
+    global cap, after_id, modo_reconocerFacial, guardar, modo_deteccion_pura
     global conteo_tp, conteo_fp, conteo_fn, conteo_tn, cola_videos
     
     if after_id is not None:
@@ -566,6 +628,7 @@ def finalizar_limpiar():
         cap = None
     
     modo_reconocerFacial = False
+    modo_deteccion_pura = False
     guardar = False
     
     # Resetear contadores de clasificación
@@ -602,6 +665,7 @@ def finalizar_limpiar():
     lblContador.config(text="Imágenes capturadas: 0/300")
     lblClasificacion.config(text="TP: 0 | FP: 0 | FN: 0 | TN: 0")
     btnReconocerFacial.configure(state="disabled", text="🔍 Reconocer Persona")
+    btnDeteccionPura.configure(state="disabled", text="📊 Detección Pura")
 
 def guardar_nombre(textNombre):
     global personName, guardar, frame_count
@@ -669,6 +733,122 @@ def finalizar_guardar_resultado():
     # Liberar el video actual
     if cap and cap.isOpened():
         cap.release()
+
+def finalizar_guardar_resultado_puro():
+    """
+    Calcula y guarda en BD las métricas del modo DETECCIÓN PURA (sin reconocimiento).
+    Solo registra: total detecciones, tiempo, FPS y tiempo/frame.
+    Tabla: SI_FinRendimientoDeteccionPura
+    SP:    DET_InsertDataDeteccionPura_SP
+    """
+    global cap, detecciones_totales, tiempo_inicio_simulacion, video_actual_path
+    global frames_procesados
+
+    tiempo_fin_simulacion = datetime.datetime.now()
+    tiempo_total_ms = round((tiempo_fin_simulacion - tiempo_inicio_simulacion).total_seconds() * 1000, 3) if tiempo_inicio_simulacion else 0
+    tiempo_total_segundos = tiempo_total_ms / 1000.0 if tiempo_total_ms > 0 else 0
+
+    # Calcular métricas
+    fps_promedio = round(frames_procesados / tiempo_total_segundos, 2) if tiempo_total_segundos > 0 else 0
+    tiempo_promedio_frame = round(tiempo_total_ms / frames_procesados, 3) if frames_procesados > 0 else 0
+
+    video_nombre = os.path.basename(video_actual_path) if video_actual_path else "Camara en Directo"
+    
+    # Imprimir reporte en consola
+    print("")
+    print("=" * 55)
+    print("  RESUMEN DE DETECCIÓN PURA (SIN RECONOCIMIENTO)")
+    print("=" * 55)
+    print(f"  Video:                {video_nombre}")
+    print(f"  Modelo:               {MODELO_ACTIVO}")
+    print("-" * 55)
+    print(f"  Total detecciones:    {detecciones_totales}")
+    print(f"  Frames procesados:    {frames_procesados}")
+    print(f"  Tiempo total:         {tiempo_total_ms:.2f} ms")
+    print(f"  FPS promedio:         {fps_promedio:.2f}")
+    print(f"  Tiempo/Frame:         {tiempo_promedio_frame:.2f} ms")
+    print("=" * 55)
+    print("")
+
+    fecha_simulacion_str = tiempo_fin_simulacion.strftime('%Y-%m-%d %H:%M:%S')
+    insertar_Resultado_Deteccion_Pura(
+        algoritmo=MODELO_ACTIVO,
+        video_prueba=video_nombre,
+        total_detecciones=detecciones_totales,
+        total_frames_procesados=frames_procesados,
+        tiempo_respuesta_ms=tiempo_total_ms,
+        fps_promedio=fps_promedio,
+        tiempo_promedio_frame_ms=tiempo_promedio_frame,
+        fecha_simulacion=fecha_simulacion_str,
+        configuracion="Video grabado con cámara de video vigilancia."
+    )
+
+    # Resetear contadores para el siguiente video
+    detecciones_totales = 0
+    frames_procesados = 0
+    tiempo_inicio_simulacion = None
+    face_data_cache.clear()
+    _cached_heavy_detections.clear()
+
+    if cap and cap.isOpened():
+        cap.release()
+
+
+def insertar_Resultado_Deteccion_Pura(algoritmo, video_prueba, total_detecciones,
+                                       total_frames_procesados, tiempo_respuesta_ms,
+                                       fps_promedio, tiempo_promedio_frame_ms,
+                                       fecha_simulacion, configuracion):
+    """
+    Inserta un nuevo registro en la tabla SI_FinRendimientoDeteccionPura
+    llamando al stored procedure DET_InsertDataDeteccionPura_SP.
+    """
+    global conn
+
+    # Asegurar que la conexión esté activa (reconectar si es necesario)
+    if not _asegurar_conexion():
+        print(f"ERROR CRÍTICO: No se pudo guardar el resultado puro del video '{video_prueba}'. Sin conexión a BD.")
+        return
+
+    cursor = conn.cursor()
+
+    # Llamada al stored procedure DET_InsertDataDeteccionPura_SP con 9 parámetros
+    sp_call = "EXEC DET_InsertDataDeteccionPura_SP ?, ?, ?, ?, ?, ?, ?, ?, ?"
+
+    params = (
+        algoritmo,
+        video_prueba,
+        total_detecciones,
+        total_frames_procesados,
+        tiempo_respuesta_ms,
+        fps_promedio,
+        tiempo_promedio_frame_ms,
+        fecha_simulacion,
+        configuracion
+    )
+
+    try:
+        cursor.execute(sp_call, params)
+        conn.commit()
+        print(f"[DETECCIÓN PURA] Datos guardados en BD. (Modelo: {algoritmo}, Video: {video_prueba})")
+    except pyodbc.Error as ex:
+        print(f"Error al insertar datos de detección pura: {ex}")
+        # Intentar reconectar y reintentar UNA vez
+        print("Reintentando con nueva conexión...")
+        try:
+            conn = Conexion.get_db_connection()
+            if conn:
+                cursor2 = conn.cursor()
+                cursor2.execute(sp_call, params)
+                conn.commit()
+                cursor2.close()
+                print(f"Reintento exitoso. Datos guardados. (Modelo: {algoritmo}, Video: {video_prueba})")
+            else:
+                print(f"FALLO TOTAL: No se pudieron guardar los datos puros del video '{video_prueba}'.")
+        except Exception as ex2:
+            print(f"FALLO en reintento: {ex2}")
+    finally:
+        cursor.close()
+
 
 def _asegurar_conexion():
     """Verifica que la conexión a la BD esté activa. Si no, reconecta."""
@@ -764,7 +944,7 @@ def limpiar():
 
 def cargar_formulario():
     global root, lblInfoVideoPath, lblVideo, btnVIdeo, btnCamara, btnCarpeta, btnEnd
-    global btnGuardar, textNombre, guardar, btnEntrenar, btnReconocerFacial
+    global btnGuardar, textNombre, guardar, btnEntrenar, btnReconocerFacial, btnDeteccionPura
     global lblEstado, lblDetecciones, lblContador, lblClasificacion, cap, MODELO_ACTIVO
     
     cap = None
@@ -916,6 +1096,13 @@ def cargar_formulario():
                                command=activar_reconocimiento)
     btnReconocerFacial.pack(fill=X, pady=3, ipady=3)
 
+    # === NUEVO BOTÓN: DETECCIÓN PURA (SIN RECONOCIMIENTO) ===
+    btnDeteccionPura = Button(seccion_reconocimiento, text="📊 Detección Pura",
+                              font=("Arial", 9), bg="#e67e22", fg="white",
+                              relief=FLAT, cursor="hand2", state="disabled",
+                              command=activar_deteccion_pura)
+    btnDeteccionPura.pack(fill=X, pady=3, ipady=3)
+
     # --- Sección: Estado ---
     seccion_estado = LabelFrame(panel_controles, text="  Información  ", 
                                font=("Arial", 9, "bold"), bg="white", fg="#34495e", padx=10, pady=5)
@@ -948,4 +1135,3 @@ def cargar_formulario():
 
 if __name__ == "__main__":
     cargar_formulario()
-    
