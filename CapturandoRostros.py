@@ -30,6 +30,17 @@ yolo_model = YOLO(model_path)
 ssd_model = None
 faster_rcnn_model = None
 
+# === DETECTOR FACIAL PARA PIPELINE EN DOS ETAPAS ===
+# Haar Cascade integrado en OpenCV. Se usa cuando el modelo activo es SSD o Faster R-CNN
+# para localizar el rostro DENTRO del bounding box del cuerpo detectado.
+# Esto permite que ArcFace reciba un rostro recortado (no un cuerpo completo).
+face_cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+face_cascade = cv2.CascadeClassifier(face_cascade_path)
+if face_cascade.empty():
+    print("ADVERTENCIA: No se pudo cargar el Haar Cascade. El reconocimiento con SSD/Faster R-CNN no funcionará correctamente.")
+else:
+    print("Haar Cascade cargado correctamente (pipeline en dos etapas habilitado para SSD/Faster R-CNN).")
+
 conn = Conexion.get_db_connection()
 
 detecciones_totales = 0
@@ -105,6 +116,48 @@ def guardar_frame(frame, x, y, w, h):
         cv2.imwrite(filename, rostro)
         lblContador.config(text=f"Imágenes capturadas: {frame_count}/{limite_imagenes}")
 
+def extraer_rostro_de_cuerpo(cuerpo_crop):
+    """
+    Aplica Haar Cascade dentro del bounding box del cuerpo (SSD/Faster R-CNN)
+    para localizar el rostro y devolverlo recortado.
+    
+    Args:
+        cuerpo_crop: numpy array BGR con el recorte del cuerpo detectado.
+    
+    Returns:
+        rostro_crop (numpy array BGR) si se encuentra un rostro válido.
+        None si no se detectó rostro dentro del cuerpo.
+    """
+    if cuerpo_crop is None or cuerpo_crop.size == 0:
+        return None
+    
+    try:
+        # Haar Cascade requiere escala de grises
+        gray = cv2.cvtColor(cuerpo_crop, cv2.COLOR_BGR2GRAY)
+        
+        # Buscar rostros dentro del recorte del cuerpo
+        faces = face_cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(40, 40)  # Tamaño mínimo razonable para que ArcFace pueda procesarlo
+        )
+        
+        if len(faces) == 0:
+            return None
+        
+        # Si Haar detecta varios rostros, tomar el más grande (probablemente el más cercano/nítido)
+        faces_ordenados = sorted(faces, key=lambda f: f[2] * f[3], reverse=True)
+        fx, fy, fw, fh = faces_ordenados[0]
+        
+        rostro = cuerpo_crop[fy:fy+fh, fx:fx+fw].copy()
+        return rostro
+    
+    except Exception as e:
+        print(f"Error en extraer_rostro_de_cuerpo: {e}")
+        return None
+
+
 def procesar_deteccion(frame, x, y, w, h):
     global detecciones_totales
     global conteo_tp, conteo_fp, conteo_fn, conteo_tn
@@ -149,8 +202,27 @@ def procesar_deteccion(frame, x, y, w, h):
             
             if item['skip'] <= 0 and not item.get('pending', False):
                  item['pending'] = True
-                 rostro_recorte = frame[y:y+h, x:x+w].copy()
-                 recognition_queue.put((rostro_recorte, item))
+                 
+                 # === PIPELINE EN DOS ETAPAS ===
+                 # Si el modelo detecta cuerpo completo (SSD/Faster R-CNN),
+                 # buscar el rostro dentro del cuerpo con Haar Cascade.
+                 if MODELO_ACTIVO in ["SSD", "FASTER R-CNN"]:
+                     cuerpo_crop = frame[y:y+h, x:x+w].copy()
+                     rostro_recorte = extraer_rostro_de_cuerpo(cuerpo_crop)
+                     
+                     if rostro_recorte is None:
+                         # Haar no encontró rostro dentro del cuerpo → FILTRADO
+                         item['name'] = "No Autorizado"
+                         item['color'] = (0, 0, 255)
+                         item['clasificacion'] = "FILTRADO"
+                         item['pending'] = False
+                         item['skip'] = 5  # Saltar varios frames antes de reintentar
+                     else:
+                         recognition_queue.put((rostro_recorte, item))
+                 else:
+                     # YOLO ya detecta rostros directamente, recortar tal cual
+                     rostro_recorte = frame[y:y+h, x:x+w].copy()
+                     recognition_queue.put((rostro_recorte, item))
             else:
                  if not item.get('pending', False):
                      item['skip'] -= 1
@@ -172,9 +244,24 @@ def procesar_deteccion(frame, x, y, w, h):
             }
             face_data_cache.append(new_item)
             
-            # Enviar a reconocer inmediatamente
-            rostro_recorte = frame[y:y+h, x:x+w].copy()
-            recognition_queue.put((rostro_recorte, new_item))
+            # === PIPELINE EN DOS ETAPAS para el nuevo rostro ===
+            if MODELO_ACTIVO in ["SSD", "FASTER R-CNN"]:
+                cuerpo_crop = frame[y:y+h, x:x+w].copy()
+                rostro_recorte = extraer_rostro_de_cuerpo(cuerpo_crop)
+                
+                if rostro_recorte is None:
+                    # Haar no encontró rostro dentro del cuerpo → FILTRADO
+                    new_item['name'] = "No Autorizado"
+                    new_item['color'] = (0, 0, 255)
+                    new_item['clasificacion'] = "FILTRADO"
+                    new_item['pending'] = False
+                    new_item['skip'] = 5
+                else:
+                    recognition_queue.put((rostro_recorte, new_item))
+            else:
+                # YOLO ya entrega un rostro recortado
+                rostro_recorte = frame[y:y+h, x:x+w].copy()
+                recognition_queue.put((rostro_recorte, new_item))
             
             nombre_mostrar = new_item['name']
             color_mostrar = new_item['color']
